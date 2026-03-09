@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:geolocator/geolocator.dart';
@@ -8,77 +9,79 @@ import 'history_screen.dart';
 import 'map_screen.dart';
 import 'profile_screen.dart';
 
-// --- SHELL UTAMA (NAVBAR) ---
+enum PatrolStatus { idle, patrolling, standby, emergency }
+
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
-
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
 class _HomeScreenState extends State<HomeScreen> {
   int _currentIndex = 0;
+  double? targetLat;
+  double? targetLng;
 
-  final List<Widget> _pages = [
-    const BerandaTab(),
-    const AduanScreen(),
-    const HistoryScreen(),
-    const MapScreen(),
-    const ProfileScreen(),
-  ];
+  // Fungsi untuk berpindah tab secara aman dari halaman anak
+  void _changeTab(int index) {
+    setState(() {
+      _currentIndex = index;
+      if (index != 3) {
+        targetLat = null;
+        targetLng = null;
+      }
+    });
+  }
+
+  void navigateToMap(double lat, double lng) {
+    setState(() {
+      targetLat = lat;
+      targetLng = lng;
+      _currentIndex = 3;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
+    final List<Widget> pages = [
+      BerandaTab(onNavigateToMap: navigateToMap),
+      // Kita kirim fungsi _changeTab ke AduanScreen
+      AduanScreen(onSuccess: () => _changeTab(0)),
+      const HistoryScreen(),
+      MapScreen(initialLat: targetLat, initialLng: targetLng),
+      const ProfileScreen(),
+    ];
+
     return Scaffold(
       backgroundColor: const Color(0xFF151B25),
-      body: IndexedStack(index: _currentIndex, children: _pages),
-      bottomNavigationBar: Container(
-        decoration: BoxDecoration(
-          color: const Color(0xFF222B36),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.3),
-              blurRadius: 10,
-              offset: const Offset(0, -5),
-            ),
-          ],
-        ),
-        child: BottomNavigationBar(
-          currentIndex: _currentIndex,
-          onTap: (index) => setState(() => _currentIndex = index),
-          backgroundColor: const Color(0xFF222B36),
-          type: BottomNavigationBarType.fixed,
-          selectedItemColor: const Color(0xFFFFC107),
-          unselectedItemColor: Colors.grey,
-          showUnselectedLabels: true,
-          items: const [
-            BottomNavigationBarItem(
-              icon: Icon(Icons.home_filled),
-              label: 'Beranda',
-            ),
-            BottomNavigationBarItem(icon: Icon(Icons.campaign), label: 'Aduan'),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.history),
-              label: 'Riwayat',
-            ),
-            BottomNavigationBarItem(icon: Icon(Icons.map), label: 'Peta'),
-            BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Profil'),
-          ],
-        ),
+      body: IndexedStack(index: _currentIndex, children: pages),
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _currentIndex,
+        onTap: _changeTab,
+        backgroundColor: const Color(0xFF222B36),
+        type: BottomNavigationBarType.fixed,
+        selectedItemColor: const Color(0xFFFFC107),
+        unselectedItemColor: Colors.grey,
+        showUnselectedLabels: true,
+        items: const [
+          BottomNavigationBarItem(
+            icon: Icon(Icons.home_filled),
+            label: 'Beranda',
+          ),
+          BottomNavigationBarItem(icon: Icon(Icons.campaign), label: 'Aduan'),
+          BottomNavigationBarItem(icon: Icon(Icons.history), label: 'Riwayat'),
+          BottomNavigationBarItem(icon: Icon(Icons.map), label: 'Peta'),
+          BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Profil'),
+        ],
       ),
     );
   }
 }
 
-// ==========================================================
-// --- TAB BERANDA ---
-// ==========================================================
-
-enum PatrolStatus { idle, patrolling, standby, emergency }
-
+// --- BAGIAN BERANDA TAB (DENGAN LOGIKA GPS SAAT MULAI) ---
 class BerandaTab extends StatefulWidget {
-  const BerandaTab({super.key});
-
+  final Function(double, double) onNavigateToMap;
+  const BerandaTab({super.key, required this.onNavigateToMap});
   @override
   State<BerandaTab> createState() => _BerandaTabState();
 }
@@ -88,114 +91,149 @@ class _BerandaTabState extends State<BerandaTab> {
   String _fullname = "Memuat...";
   String _pangkat = "";
   bool _isLoading = false;
+  List<dynamic> _jadwalList = [];
+  int _checkpointCount = 0;
+  int _lastNotifId = 0;
+  StreamSubscription<Position>? _positionStream;
+  Timer? _pollingTimer;
 
   @override
   void initState() {
     super.initState();
     _loadUserData();
+    _pollingTimer = Timer.periodic(const Duration(seconds: 10), (t) {
+      if (mounted) {
+        _fetchSyncData();
+        _checkInstructions();
+      }
+    });
   }
 
-  void _loadUserData() async {
+  @override
+  void dispose() {
+    _pollingTimer?.cancel();
+    _positionStream?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadUserData() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
     if (mounted) {
       setState(() {
-        _fullname =
-            prefs.getString('nama_lengkap') ??
-            prefs.getString('username') ??
-            "Petugas";
+        _fullname = prefs.getString('nama_lengkap') ?? "Petugas";
         _pangkat = prefs.getString('pangkat') ?? "Anggota";
+      });
+    }
+    _fetchSyncData();
+  }
+
+  Future<void> _fetchSyncData() async {
+    final j = await ApiService().getJadwal();
+    final r = await ApiService().getRingkasan();
+    if (mounted) {
+      setState(() {
+        _jadwalList = j;
+        _checkpointCount = r['checkpoint_count'] ?? 0;
       });
     }
   }
 
-  void _handleMainButtonTap() {
-    if (_status == PatrolStatus.idle) {
-      _checkGpsAndStartPatrol();
-    } else {
-      _confirmStopPatrol();
+  Future<void> _checkInstructions() async {
+    final latest = await ApiService().getLatestInstruction();
+    if (latest != null && (latest['id'] ?? 0) > _lastNotifId) {
+      _lastNotifId = latest['id'];
+      _showNotif(latest['judul'], latest['isi'], latest['tipe']);
     }
   }
 
-  // 1. Cek GPS & Izin Lokasi
-  Future<void> _checkGpsAndStartPatrol() async {
-    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!serviceEnabled) {
-      if (!mounted) return;
-      _showGpsDialog();
-      return;
-    }
+  void _showNotif(String title, String body, String type) {
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF222B36),
+        title: Text(
+          title,
+          style: TextStyle(
+            color: type == 'darurat' ? Colors.red : Colors.yellow,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        content: Text(body, style: const TextStyle(color: Colors.white)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("OK"),
+          ),
+        ],
+      ),
+    );
+  }
 
-    LocationPermission permission = await Geolocator.checkPermission();
-    if (permission == LocationPermission.denied) {
-      permission = await Geolocator.requestPermission();
-      if (permission == LocationPermission.denied) {
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Izin lokasi wajib diterima!")),
-        );
+  // --- MODIFIKASI: LOGIKA GPS SAAT TEKAN MULAI ---
+  Future<void> _handleMainTap() async {
+    if (_status == PatrolStatus.idle) {
+      // 1. Cek apakah GPS (Service Lokasi) di HP sudah aktif
+      bool isLocationEnabled = await Geolocator.isLocationServiceEnabled();
+
+      if (!isLocationEnabled) {
+        // 2. Jika mati, tampilkan dialog notifikasi aktifkan GPS
+        if (mounted) {
+          _showGpsActivationDialog();
+        }
         return;
       }
-    }
 
-    if (permission == LocationPermission.deniedForever) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Izin lokasi ditolak permanen.")),
-      );
-      return;
-    }
+      // 3. Jika sudah aktif, cek izin (Permissions)
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) return;
+      }
 
-    if (!mounted) return;
-    _showStartConfirmation();
+      // 4. Lanjut Update Backend
+      _updateBackend('patroli', PatrolStatus.patrolling);
+    } else if (_status == PatrolStatus.patrolling) {
+      _showStopDialog();
+    } else {
+      _updateBackend('patroli', PatrolStatus.patrolling);
+    }
   }
 
-  // 2. Dialog Nyalakan GPS
-  void _showGpsDialog() {
+  // Dialog Notifikasi Aktifkan GPS
+  void _showGpsActivationDialog() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("GPS Tidak Aktif"),
-        content: const Text("Aktifkan GPS untuk memulai patroli."),
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF222B36),
+        title: const Row(
+          children: [
+            Icon(Icons.location_off, color: Colors.red),
+            SizedBox(width: 10),
+            Text("GPS Tidak Aktif", style: TextStyle(color: Colors.white)),
+          ],
+        ),
+        content: const Text(
+          "Mohon aktifkan Lokasi (GPS) pada ponsel Anda untuk memulai patroli.",
+          style: TextStyle(color: Colors.white70),
+        ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("Batal"),
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text("BATAL", style: TextStyle(color: Colors.grey)),
           ),
           ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.yellow),
             onPressed: () {
-              Navigator.pop(context);
-              Geolocator.openLocationSettings();
-            },
-            child: const Text("Buka Pengaturan"),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // 3. Dialog Konfirmasi Mulai
-  void _showStartConfirmation() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Mulai Patroli?"),
-        content: const Text("Status dan lokasi Anda akan mulai direkam."),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("Batal"),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF0D47A1),
-            ),
-            onPressed: () {
-              Navigator.pop(context);
-              _processStartPatrol();
+              Navigator.pop(ctx);
+              Geolocator.openLocationSettings(); // Membuka pengaturan GPS HP
             },
             child: const Text(
-              "YA, MULAI",
-              style: TextStyle(color: Colors.white),
+              "AKTIFKAN",
+              style: TextStyle(
+                color: Colors.black,
+                fontWeight: FontWeight.bold,
+              ),
             ),
           ),
         ],
@@ -203,385 +241,287 @@ class _BerandaTabState extends State<BerandaTab> {
     );
   }
 
-  // 4. Proses API Start Patroli
-  Future<void> _processStartPatrol() async {
-    setState(() {
-      _isLoading = true;
-    });
-
+  Future<void> _updateBackend(String bStat, PatrolStatus uiStat) async {
+    setState(() => _isLoading = true);
     try {
-      Position position = await Geolocator.getCurrentPosition(
+      Position p = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
         ),
       );
-
-      if (!mounted) return;
-
-      bool success = await ApiService().updatePatrolStatus(
-        lat: position.latitude,
-        long: position.longitude,
-        status: 'start',
+      bool ok = await ApiService().updatePatrolStatus(
+        lat: p.latitude,
+        long: p.longitude,
+        status: bStat,
       );
-
-      if (!mounted) return;
-
-      setState(() {
-        _isLoading = false;
-      });
-
-      if (success) {
-        setState(() {
-          _status = PatrolStatus.patrolling;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            backgroundColor: Colors.green,
-            content: Text("Patroli Dimulai!"),
-          ),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            backgroundColor: Colors.red,
-            content: Text("Gagal terhubung ke server."),
-          ),
-        );
+      if (ok && mounted) {
+        setState(() => _status = uiStat);
+        if (uiStat != PatrolStatus.idle) {
+          _positionStream?.cancel();
+          _positionStream =
+              Geolocator.getPositionStream(
+                locationSettings: const LocationSettings(
+                  accuracy: LocationAccuracy.high,
+                  distanceFilter: 10,
+                ),
+              ).listen((pos) {
+                ApiService().updatePatrolStatus(
+                  lat: pos.latitude,
+                  long: pos.longitude,
+                  status: _statusString(),
+                );
+              });
+        } else {
+          _positionStream?.cancel();
+        }
       }
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text("Terjadi kesalahan.")));
-      }
+      debugPrint("Error: $e");
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
-  // 5. Konfirmasi Berhenti
-  void _confirmStopPatrol() {
+  String _statusString() {
+    if (_status == PatrolStatus.patrolling) return 'patroli';
+    if (_status == PatrolStatus.standby) return 'bersiaga';
+    if (_status == PatrolStatus.emergency) return 'darurat';
+    return 'offline';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    bool active = _status != PatrolStatus.idle;
+    return SafeArea(
+      child: RefreshIndicator(
+        onRefresh: _fetchSyncData,
+        child: SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.all(20.0),
+          child: Column(
+            children: [
+              _buildHeaderUI(),
+              const SizedBox(height: 20),
+              _buildTrackingIndicator(active),
+              const SizedBox(height: 30),
+              _BouncingButton(
+                onTap: _isLoading ? () {} : _handleMainTap,
+                child: _isLoading ? _buildLoader() : _buildMainBtn(),
+              ),
+              const SizedBox(height: 30),
+              Row(
+                children: [
+                  Expanded(
+                    child: _BouncingButton(
+                      onTap: active
+                          ? () => Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => const CheckpointScreen(),
+                              ),
+                            ).then((_) => _fetchSyncData())
+                          : () {},
+                      child: _buildMenu(
+                        active ? const Color(0xFF5DD35D) : Colors.grey,
+                        Icons.visibility,
+                        "Checkpoint\n($_checkpointCount)",
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 15),
+                  Expanded(
+                    child: _BouncingButton(
+                      onTap: active
+                          ? () =>
+                                _updateBackend('bersiaga', PatrolStatus.standby)
+                          : () {},
+                      child: _buildMenu(
+                        active ? const Color(0xFFD48C56) : Colors.grey,
+                        Icons.local_cafe,
+                        "Siaga",
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 15),
+              _BouncingButton(
+                onTap: active
+                    ? () => _updateBackend('darurat', PatrolStatus.emergency)
+                    : () {},
+                child: _buildEmergency(active),
+              ),
+              const SizedBox(height: 25),
+              _buildSchedules(),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showStopDialog() {
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Selesai Patroli?"),
+      builder: (ctx) => AlertDialog(
+        title: const Text("Hentikan Patroli?"),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.pop(ctx),
             child: const Text("Batal"),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
             onPressed: () {
-              Navigator.pop(context);
-              setState(() {
-                _status = PatrolStatus.idle;
-              });
+              Navigator.pop(ctx);
+              _updateBackend('offline', PatrolStatus.idle);
             },
-            child: const Text("AKHIRI", style: TextStyle(color: Colors.white)),
+            child: const Text("YA", style: TextStyle(color: Colors.white)),
           ),
         ],
       ),
     );
   }
 
-  void _activateStandbyMode() {
-    setState(() {
-      _status = PatrolStatus.standby;
-    });
-  }
-
-  void _activateEmergencyMode() {
-    setState(() {
-      _status = PatrolStatus.emergency;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(20.0),
-        child: Column(
-          children: [
-            // HEADER
-            Row(
-              children: [
-                const CircleAvatar(
-                  radius: 25,
-                  backgroundColor: Colors.yellow,
-                  child: Icon(Icons.person, color: Colors.black),
-                ),
-                const SizedBox(width: 15),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      "SELAMAT DATANG",
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.w900,
-                        fontStyle: FontStyle.italic,
-                      ),
-                    ),
-                    Text(
-                      "$_pangkat $_fullname",
-                      style: TextStyle(color: Colors.grey[400], fontSize: 14),
-                    ),
-                  ],
-                ),
-                const Spacer(),
-                const Icon(Icons.notifications, color: Colors.grey, size: 30),
-              ],
-            ),
-            const SizedBox(height: 20),
-
-            // TRACKING BAR
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 12),
-              decoration: BoxDecoration(
-                color: const Color(0xFF2C3542),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Row(
-                children: const [
-                  Icon(Icons.location_on, color: Colors.blue),
-                  SizedBox(width: 10),
-                  Text(
-                    "Realtime Tracking Coordinate",
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 30),
-
-            // TOMBOL UTAMA
-            _BouncingButton(
-              onTap: _isLoading ? () {} : _handleMainButtonTap,
-              child: _isLoading
-                  ? Container(
-                      width: double.infinity,
-                      height: 140,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF151B25),
-                        borderRadius: const BorderRadius.all(
-                          Radius.elliptical(300, 180),
-                        ),
-                        border: Border.all(color: Colors.grey, width: 3),
-                      ),
-                      child: const Center(
-                        child: CircularProgressIndicator(color: Colors.white),
-                      ),
-                    )
-                  : _buildMainButton(),
-            ),
-
-            const SizedBox(height: 30),
-
-            // MENU KECIL
-            Row(
-              children: [
-                Expanded(
-                  child: _BouncingButton(
-                    onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => const CheckpointScreen(),
-                      ),
-                    ),
-                    child: _buildMenuButton(
-                      const Color(0xFF5DD35D),
-                      Icons.visibility,
-                      "Tandai rute\nCheckpoint",
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 15),
-                Expanded(
-                  child: _BouncingButton(
-                    onTap: _activateStandbyMode,
-                    child: _buildMenuButton(
-                      const Color(0xFFD48C56),
-                      Icons.local_cafe,
-                      "Sedang\nBersiaga",
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 15),
-
-            // TOMBOL DARURAT
-            _BouncingButton(
-              onTap: _activateEmergencyMode,
-              child: Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 15),
-                decoration: BoxDecoration(
-                  color: Colors.red,
-                  borderRadius: BorderRadius.circular(15),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.red.withValues(alpha: 0.4),
-                      blurRadius: 10,
-                      offset: const Offset(0, 4),
-                    ),
-                  ],
-                ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: const [
-                    Icon(
-                      Icons.warning_amber_rounded,
-                      color: Colors.white,
-                      size: 32,
-                    ),
-                    SizedBox(width: 10),
-                    Text(
-                      "Kirimkan Sinyal Darurat",
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 25),
-
-            // JADWAL
-            Container(
-              decoration: BoxDecoration(
-                color: const Color(0xFF2C3542),
-                borderRadius: BorderRadius.circular(15),
-              ),
-              child: ExpansionTile(
-                title: const Text(
-                  "Jadwal Patroli",
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                iconColor: Colors.white,
-                collapsedIconColor: Colors.white,
-                children: [
-                  _buildScheduleCard(
-                    "Kamis 28/01/2025",
-                    "17.00 - 21.00",
-                    "desa podorejo - desa kauman",
-                    "terlaksana",
-                    const Color(0xFF5DD35D),
-                  ),
-                  const SizedBox(height: 10),
-                  _buildScheduleCard(
-                    "Senin 07/02/2025",
-                    "08.00 - 11.00",
-                    "desa mangunsari - desa boyolangu",
-                    "terjadwal",
-                    Colors.red,
-                  ),
-                  const SizedBox(height: 15),
-                ],
-              ),
-            ),
-            const SizedBox(height: 20),
-          ],
+  Widget _buildHeaderUI() {
+    return Row(
+      children: [
+        const CircleAvatar(
+          radius: 25,
+          backgroundColor: Colors.yellow,
+          child: Icon(Icons.person, color: Colors.black),
         ),
-      ),
-    );
-  }
-
-  // --- WIDGET PENDUKUNG ---
-  Widget _buildMainButton() {
-    Color borderColor = const Color(0xFFFFC107);
-    Color textColor = const Color(0xFFFFC107);
-    String textTop = "Mulai", textBottom = "Berpatroli";
-
-    if (_status == PatrolStatus.patrolling) {
-      borderColor = const Color(0xFF5DD35D);
-      textColor = borderColor;
-      textTop = "Hentikan";
-      textBottom = "Patroli";
-    } else if (_status == PatrolStatus.standby) {
-      borderColor = const Color(0xFFD48C56);
-      textColor = borderColor;
-      textTop = "Lanjutkan";
-      textBottom = "Patroli";
-    } else if (_status == PatrolStatus.emergency) {
-      borderColor = Colors.red;
-      textColor = Colors.red;
-      textTop = "Hentikan";
-      textBottom = "Sinyal Darurat";
-    }
-
-    return Center(
-      child: Container(
-        width: double.infinity,
-        height: 140,
-        decoration: BoxDecoration(
-          color: const Color(0xFF151B25),
-          borderRadius: const BorderRadius.all(Radius.elliptical(300, 180)),
-          border: Border.all(color: borderColor, width: 3),
-        ),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+        const SizedBox(width: 15),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              textTop,
+            const Text(
+              "WELCOME",
               style: TextStyle(
-                color: textColor,
-                fontSize: 24,
+                color: Colors.white,
+                fontSize: 18,
                 fontWeight: FontWeight.bold,
-                fontStyle: FontStyle.italic,
-                fontFamily: 'Serif',
               ),
             ),
             Text(
-              textBottom,
-              style: TextStyle(
-                color: textColor,
-                fontSize: 28,
-                fontWeight: FontWeight.w900,
-                fontStyle: FontStyle.italic,
-                fontFamily: 'Serif',
-              ),
+              "$_pangkat $_fullname",
+              style: const TextStyle(color: Colors.grey),
             ),
           ],
+        ),
+        const Spacer(),
+        Stack(
+          children: [
+            const Icon(Icons.notifications, color: Colors.grey, size: 30),
+            if (_lastNotifId > 0)
+              Positioned(
+                right: 0,
+                top: 0,
+                child: Container(
+                  padding: const EdgeInsets.all(2),
+                  decoration: const BoxDecoration(
+                    color: Colors.red,
+                    shape: BoxShape.circle,
+                  ),
+                  constraints: const BoxConstraints(minWidth: 8, minHeight: 8),
+                ),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTrackingIndicator(bool a) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF2C3542),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.location_on, color: a ? Colors.blue : Colors.grey),
+          const SizedBox(width: 10),
+          Text(
+            a ? "Sharelock Aktif" : "Offline",
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLoader() {
+    return Container(
+      width: double.infinity,
+      height: 140,
+      decoration: BoxDecoration(
+        borderRadius: const BorderRadius.all(Radius.elliptical(300, 180)),
+        border: Border.all(color: Colors.grey, width: 3),
+      ),
+      child: const Center(
+        child: CircularProgressIndicator(color: Colors.white),
+      ),
+    );
+  }
+
+  Widget _buildMainBtn() {
+    Color c = const Color(0xFFFFC107);
+    String t = "Mulai";
+    if (_status == PatrolStatus.patrolling) {
+      c = const Color(0xFF5DD35D);
+      t = "Berhenti";
+    } else if (_status == PatrolStatus.standby) {
+      c = const Color(0xFFD48C56);
+      t = "Lanjut";
+    } else if (_status == PatrolStatus.emergency) {
+      c = Colors.red;
+      t = "Matikan";
+    }
+    return Container(
+      width: double.infinity,
+      height: 140,
+      decoration: BoxDecoration(
+        color: const Color(0xFF151B25),
+        borderRadius: const BorderRadius.all(Radius.elliptical(300, 180)),
+        border: Border.all(color: c, width: 4),
+      ),
+      child: Center(
+        child: Text(
+          t,
+          style: TextStyle(
+            color: c,
+            fontSize: 28,
+            fontWeight: FontWeight.bold,
+            fontStyle: FontStyle.italic,
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildMenuButton(Color color, IconData icon, String label) {
+  Widget _buildMenu(Color c, IconData i, String l) {
     return Container(
       height: 100,
       padding: const EdgeInsets.all(15),
       decoration: BoxDecoration(
-        color: color,
+        color: c,
         borderRadius: BorderRadius.circular(15),
       ),
       child: Row(
         children: [
-          Icon(icon, color: Colors.white, size: 30),
+          Icon(i, color: Colors.white, size: 30),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              label,
+              l,
               style: const TextStyle(
                 color: Colors.white,
                 fontWeight: FontWeight.bold,
-                fontSize: 16,
               ),
             ),
           ),
@@ -590,83 +530,82 @@ class _BerandaTabState extends State<BerandaTab> {
     );
   }
 
-  Widget _buildScheduleCard(
-    String date,
-    String time,
-    String location,
-    String status,
-    Color color,
-  ) {
+  Widget _buildEmergency(bool a) {
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 15),
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 18),
       decoration: BoxDecoration(
-        color: const Color(0xFF222B36),
-        borderRadius: BorderRadius.circular(12),
+        color: a ? Colors.red : Colors.grey,
+        borderRadius: BorderRadius.circular(15),
       ),
-      child: IntrinsicHeight(
-        child: Row(
-          children: [
-            Container(
-              width: 10,
-              decoration: BoxDecoration(
-                color: color,
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(12),
-                  bottomLeft: Radius.circular(12),
-                ),
-              ),
-            ),
-            const SizedBox(width: 15),
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  vertical: 12,
-                  horizontal: 8,
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          date,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 16,
-                          ),
-                        ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFFFC107),
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Text(
-                            status,
-                            style: const TextStyle(
-                              color: Colors.black,
-                              fontSize: 10,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 5),
-                    Text(
-                      "$time | $location",
-                      style: TextStyle(color: Colors.grey[400], fontSize: 13),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
+      child: const Center(
+        child: Text(
+          "SINYAL DARURAT",
+          style: TextStyle(
+            color: Colors.white,
+            fontWeight: FontWeight.bold,
+            fontSize: 18,
+          ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildSchedules() {
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF2C3542),
+        borderRadius: BorderRadius.circular(15),
+      ),
+      child: ExpansionTile(
+        initiallyExpanded: true,
+        title: const Text(
+          "Jadwal Patroli Saya",
+          style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+        ),
+        iconColor: Colors.white,
+        collapsedIconColor: Colors.white,
+        children: _jadwalList.isEmpty
+            ? [
+                const ListTile(
+                  title: Text(
+                    "Tidak ada jadwal",
+                    style: TextStyle(color: Colors.grey),
+                  ),
+                ),
+              ]
+            : _jadwalList.map((j) {
+                return ListTile(
+                  onTap: () {
+                    double? lat = double.tryParse(j['latitude'].toString());
+                    double? lng = double.tryParse(j['longitude'].toString());
+                    if (lat != null && lng != null && lat != 0.0) {
+                      widget.onNavigateToMap(lat, lng);
+                    }
+                  },
+                  leading: const Icon(
+                    Icons.map_rounded,
+                    color: Colors.yellow,
+                    size: 24,
+                  ),
+                  title: Text(
+                    j['lokasi_target'] ?? 'Lokasi Belum Diatur',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  subtitle: Text(
+                    "${j['tanggal']} | ${j['shift']}",
+                    style: const TextStyle(color: Colors.grey, fontSize: 12),
+                  ),
+                  trailing: const Icon(
+                    Icons.arrow_forward_ios,
+                    color: Colors.grey,
+                    size: 16,
+                  ),
+                );
+              }).toList(),
       ),
     );
   }
@@ -683,7 +622,6 @@ class _BouncingButton extends StatefulWidget {
 class _BouncingButtonState extends State<_BouncingButton>
     with SingleTickerProviderStateMixin {
   late AnimationController _controller;
-  late Animation<double> _scaleAnimation;
   @override
   void initState() {
     super.initState();
@@ -691,10 +629,6 @@ class _BouncingButtonState extends State<_BouncingButton>
       vsync: this,
       duration: const Duration(milliseconds: 100),
     );
-    _scaleAnimation = Tween<double>(
-      begin: 1.0,
-      end: 0.95,
-    ).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
   }
 
   @override
@@ -712,7 +646,10 @@ class _BouncingButtonState extends State<_BouncingButton>
         widget.onTap();
       },
       onTapCancel: () => _controller.reverse(),
-      child: ScaleTransition(scale: _scaleAnimation, child: widget.child),
+      child: ScaleTransition(
+        scale: Tween<double>(begin: 1.0, end: 0.95).animate(_controller),
+        child: widget.child,
+      ),
     );
   }
 }
