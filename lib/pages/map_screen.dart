@@ -18,6 +18,8 @@ class MapScreen extends StatefulWidget {
 
 class _MapScreenState extends State<MapScreen> {
   final MapController _mapController = MapController();
+  final DraggableScrollableController _sheetController =
+      DraggableScrollableController();
 
   // STATE VARIABLES
   LatLng _myLocation = const LatLng(-8.0667, 111.9000);
@@ -30,14 +32,14 @@ class _MapScreenState extends State<MapScreen> {
   bool _isMapReady = false;
   bool _isSatelliteMode = false;
   bool _isFetching = false;
+  bool _isPanelExpanded = false;
 
   @override
   void initState() {
     super.initState();
     _initData();
 
-    // Refresh berkala setiap 10 detik
-    _refreshTimer = Timer.periodic(const Duration(seconds: 10), (t) {
+    _refreshTimer = Timer.periodic(const Duration(seconds: 7), (t) {
       if (mounted && !_isFetching) {
         _fetchAllData();
       }
@@ -47,7 +49,47 @@ class _MapScreenState extends State<MapScreen> {
   @override
   void dispose() {
     _refreshTimer?.cancel();
+    _sheetController.dispose();
     super.dispose();
+  }
+
+  void _togglePanel() {
+    if (_isPanelExpanded) {
+      _sheetController.animateTo(
+        0.12,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+      );
+    } else {
+      _sheetController.animateTo(
+        0.5,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeInOut,
+      );
+    }
+    setState(() {
+      _isPanelExpanded = !_isPanelExpanded;
+    });
+  }
+
+  Color _getStatusColor(String? status) {
+    switch (status?.toLowerCase()) {
+      case 'patroli':
+        return Colors.blue;
+      case 'bersiaga':
+        return Colors.yellow;
+      case 'darurat':
+        return Colors.red;
+      default:
+        return Colors.green;
+    }
+  }
+
+  double _getPancaranRadius(String? status) {
+    if (status?.toLowerCase() == 'darurat') {
+      return 150.0;
+    }
+    return 60.0;
   }
 
   Future<void> _initData() async {
@@ -73,7 +115,7 @@ class _MapScreenState extends State<MapScreen> {
     try {
       await Future.wait([
         _getCurrentLocation(),
-        _fetchOtherPersonnels(), // Fungsi ini sudah dikembalikan
+        _fetchOtherPersonnels(),
         _fetchMissions(),
       ]);
 
@@ -83,7 +125,9 @@ class _MapScreenState extends State<MapScreen> {
       debugPrint("Global Fetch Error: $e");
     } finally {
       if (mounted) {
-        setState(() => _isFetching = false);
+        setState(() {
+          _isFetching = false;
+        });
       }
     }
   }
@@ -94,22 +138,25 @@ class _MapScreenState extends State<MapScreen> {
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
         ),
-      ).timeout(const Duration(seconds: 4));
+      ).timeout(const Duration(seconds: 10));
 
       if (mounted) {
-        setState(() => _myLocation = LatLng(pos.latitude, pos.longitude));
+        setState(() {
+          _myLocation = LatLng(pos.latitude, pos.longitude);
+        });
       }
     } catch (e) {
       debugPrint("GPS Error: $e");
     }
   }
 
-  // --- FUNGSI DIAMBILNYA LOKASI PERSONEL LAIN ---
   Future<void> _fetchOtherPersonnels() async {
     try {
-      final data = await ApiService().getOtherLocations();
+      final data = await ApiService().getAllPersonnelLocations();
       if (mounted) {
-        setState(() => _otherPersonnels = data);
+        setState(() {
+          _otherPersonnels = data;
+        });
       }
     } catch (e) {
       debugPrint("Fetch Personnels Error: $e");
@@ -123,7 +170,6 @@ class _MapScreenState extends State<MapScreen> {
         api.getJadwal(),
         api.getLatestInstruction(),
       ]);
-
       final List<dynamic> jadwal = results[0] as List<dynamic>;
       final dynamic inst = results[1];
 
@@ -190,7 +236,6 @@ class _MapScreenState extends State<MapScreen> {
       final res = await http
           .get(Uri.parse(url))
           .timeout(const Duration(seconds: 5));
-
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
         if (data['routes'] != null && data['routes'].isNotEmpty) {
@@ -215,7 +260,6 @@ class _MapScreenState extends State<MapScreen> {
       return;
     }
     List<String> reachedKeys = [];
-
     for (var m in _activeMissions) {
       double dist = Geolocator.distanceBetween(
         _myLocation.latitude,
@@ -223,11 +267,10 @@ class _MapScreenState extends State<MapScreen> {
         m['lat'],
         m['lng'],
       );
-      if (dist < 30) {
+      if (dist < 35) {
         reachedKeys.add(m['key']);
       }
     }
-
     if (reachedKeys.isNotEmpty && mounted) {
       setState(() {
         _activeMissions.removeWhere((m) => reachedKeys.contains(m['key']));
@@ -245,8 +288,8 @@ class _MapScreenState extends State<MapScreen> {
         .map(
           (m) => Polyline(
             points: _missionRoutes[m['key']]!,
-            strokeWidth: 5.0,
-            color: m['color'].withValues(alpha: 0.7),
+            strokeWidth: 4.0,
+            color: m['color'].withValues(alpha: 0.6),
           ),
         )
         .toList();
@@ -263,14 +306,35 @@ class _MapScreenState extends State<MapScreen> {
             options: MapOptions(
               initialCenter: _myLocation,
               initialZoom: 14.0,
-              onMapReady: () => setState(() => _isMapReady = true),
+              onMapReady: () {
+                setState(() {
+                  _isMapReady = true;
+                });
+              },
             ),
             children: [
               TileLayer(
                 urlTemplate: _isSatelliteMode
                     ? 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}'
                     : 'https://mt1.google.com/vt/lyrs=m&x={x}&y={y}&z={z}',
-                userAgentPackageName: 'com.trackdigital.polres.tulungagung',
+              ),
+              CircleLayer(
+                circles: _otherPersonnels.map((p) {
+                  double lat =
+                      double.tryParse(p['latitude']?.toString() ?? '0') ?? 0;
+                  double lng =
+                      double.tryParse(p['longitude']?.toString() ?? '0') ?? 0;
+                  String status = p['status_aktif'] ?? 'online';
+
+                  return CircleMarker(
+                    point: LatLng(lat, lng),
+                    color: _getStatusColor(status).withValues(alpha: 0.2),
+                    borderColor: _getStatusColor(status).withValues(alpha: 0.5),
+                    borderStrokeWidth: 2,
+                    useRadiusInMeter: true,
+                    radius: _getPancaranRadius(status),
+                  );
+                }).toList(),
               ),
               PolylineLayer(polylines: _cachedPolylines),
               MarkerLayer(
@@ -308,16 +372,21 @@ class _MapScreenState extends State<MapScreen> {
                         child: SizedBox(),
                       );
                     }
+                    String status = p['status_aktif'] ?? 'online';
                     return Marker(
                       point: LatLng(lat, lng),
-                      width: 60,
-                      height: 60,
+                      width: 65,
+                      height: 65,
                       child: GestureDetector(
-                        onTap: () => _showPersonDetail(p),
+                        onTap: () {
+                          _showPersonDetail(p);
+                        },
                         child: _buildMarkerIcon(
-                          const Color(0xFF5DD35D),
-                          Icons.shield,
-                          p['nama_lengkap'].toString().split(' ')[0],
+                          _getStatusColor(status),
+                          status == 'darurat'
+                              ? Icons.warning_rounded
+                              : Icons.shield,
+                          p['nama_lengkap']?.toString().split(' ')[0] ?? '...',
                         ),
                       ),
                     );
@@ -327,42 +396,167 @@ class _MapScreenState extends State<MapScreen> {
             ],
           ),
           Positioned(top: 50, left: 15, right: 15, child: _buildHeaderInfo()),
+
           Positioned(
             right: 15,
-            bottom: 40,
+            bottom: 125,
             child: Column(
               children: [
                 _buildMapAction(Icons.gps_fixed, () {
-                  if (_isMapReady) {
-                    _mapController.move(_myLocation, 16.0);
-                  }
+                  _mapController.move(_myLocation, 16.0);
                 }, iconColor: Colors.yellow),
                 const SizedBox(height: 8),
                 _buildMapAction(Icons.add, () {
-                  if (_isMapReady) {
-                    _mapController.move(
-                      _mapController.camera.center,
-                      _mapController.camera.zoom + 1,
-                    );
-                  }
+                  _mapController.move(
+                    _mapController.camera.center,
+                    _mapController.camera.zoom + 1,
+                  );
                 }),
                 _buildMapAction(Icons.remove, () {
-                  if (_isMapReady) {
-                    _mapController.move(
-                      _mapController.camera.center,
-                      _mapController.camera.zoom - 1,
-                    );
-                  }
+                  _mapController.move(
+                    _mapController.camera.center,
+                    _mapController.camera.zoom - 1,
+                  );
                 }),
                 _buildMapAction(
                   _isSatelliteMode ? Icons.map : Icons.satellite_alt,
-                  () => setState(() => _isSatelliteMode = !_isSatelliteMode),
+                  () {
+                    setState(() {
+                      _isSatelliteMode = !_isSatelliteMode;
+                    });
+                  },
                 ),
               ],
             ),
           ),
+
+          _buildPersonnelListPanel(),
         ],
       ),
+    );
+  }
+
+  Widget _buildPersonnelListPanel() {
+    return DraggableScrollableSheet(
+      controller: _sheetController,
+      initialChildSize: 0.12,
+      minChildSize: 0.12,
+      maxChildSize: 0.6,
+      builder: (context, scrollController) {
+        return Container(
+          decoration: BoxDecoration(
+            color: const Color(0xFF1F2937),
+            borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.5),
+                blurRadius: 10,
+              ),
+            ],
+          ),
+          child: Column(
+            children: [
+              GestureDetector(
+                onTap: _togglePanel,
+                behavior: HitTestBehavior.opaque,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      margin: const EdgeInsets.only(top: 12, bottom: 8),
+                      width: 40,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Colors.grey[600],
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 4,
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            "REKAN AKTIF (${_otherPersonnels.length})",
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12,
+                            ),
+                          ),
+                          Icon(
+                            _isPanelExpanded
+                                ? Icons.keyboard_arrow_down
+                                : Icons.keyboard_arrow_up,
+                            color: Colors.blueAccent,
+                            size: 22,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                ),
+              ),
+              const Divider(color: Colors.white12, height: 1),
+              Expanded(
+                child: ListView.builder(
+                  controller: scrollController,
+                  padding: EdgeInsets.zero,
+                  itemCount: _otherPersonnels.length,
+                  itemBuilder: (context, index) {
+                    final p = _otherPersonnels[index];
+                    final status = p['status_aktif'] ?? 'online';
+                    final sColor = _getStatusColor(status);
+
+                    return ListTile(
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 2,
+                      ),
+                      leading: CircleAvatar(
+                        radius: 16,
+                        backgroundColor: sColor.withValues(alpha: 0.2),
+                        child: Icon(Icons.person, color: sColor, size: 18),
+                      ),
+                      title: Text(
+                        p['nama_lengkap'] ?? 'Petugas',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      subtitle: Text(
+                        "${p['pangkat'] ?? '-'} • ${status.toUpperCase()}",
+                        style: TextStyle(color: Colors.grey[400], fontSize: 11),
+                      ),
+                      trailing: const Icon(
+                        Icons.chevron_right,
+                        color: Colors.white24,
+                      ),
+                      onTap: () {
+                        double? lat = double.tryParse(
+                          p['latitude']?.toString() ?? '',
+                        );
+                        double? lng = double.tryParse(
+                          p['longitude']?.toString() ?? '',
+                        );
+                        if (lat != null && lng != null) {
+                          _mapController.move(LatLng(lat, lng), 17.0);
+                        }
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -431,6 +625,7 @@ class _MapScreenState extends State<MapScreen> {
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(5),
+            boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 2)],
           ),
           child: Text(
             label,
@@ -441,7 +636,7 @@ class _MapScreenState extends State<MapScreen> {
             ),
           ),
         ),
-        Icon(icon, color: color, size: 30),
+        Icon(icon, color: color, size: 32),
       ],
     );
   }
@@ -455,17 +650,19 @@ class _MapScreenState extends State<MapScreen> {
       onTap: onTap,
       child: Container(
         padding: const EdgeInsets.all(10),
-        margin: const EdgeInsets.only(bottom: 5),
+        margin: const EdgeInsets.only(bottom: 8),
         decoration: const BoxDecoration(
           color: Color(0xFF222B36),
           shape: BoxShape.circle,
         ),
-        child: Icon(icon, color: iconColor, size: 20),
+        child: Icon(icon, color: iconColor, size: 22),
       ),
     );
   }
 
+  // --- MODAL DETAIL TANPA TOMBOL HUBUNGI ---
   void _showPersonDetail(dynamic p) {
+    Color statusColor = _getStatusColor(p['status_aktif']);
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF222B36),
@@ -473,24 +670,65 @@ class _MapScreenState extends State<MapScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (ctx) => Container(
-        padding: const EdgeInsets.all(20),
-        height: 150,
-        child: ListTile(
-          leading: const CircleAvatar(
-            backgroundColor: Colors.yellow,
-            child: Icon(Icons.person, color: Colors.black),
-          ),
-          title: Text(
-            p['nama_lengkap'] ?? 'No Name',
-            style: const TextStyle(
-              color: Colors.white,
-              fontWeight: FontWeight.bold,
+        padding: const EdgeInsets.fromLTRB(
+          25,
+          25,
+          25,
+          40,
+        ), // Ruang bawah diperluas sedikit
+        child: Column(
+          mainAxisSize: MainAxisSize.min, // Hanya memakan ruang yang diperlukan
+          children: [
+            Row(
+              children: [
+                CircleAvatar(
+                  radius: 30,
+                  backgroundColor: statusColor.withValues(alpha: 0.2),
+                  child: Icon(Icons.person, color: statusColor, size: 35),
+                ),
+                const SizedBox(width: 15),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        p['nama_lengkap'] ?? 'Tanpa Nama',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      Text(
+                        p['pangkat'] ?? 'Petugas',
+                        style: const TextStyle(color: Colors.grey),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 5,
+                  ),
+                  decoration: BoxDecoration(
+                    color: statusColor.withValues(alpha: 0.2),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    (p['status_aktif'] ?? 'ONLINE').toUpperCase(),
+                    style: TextStyle(
+                      color: statusColor,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 10,
+                    ),
+                  ),
+                ),
+              ],
             ),
-          ),
-          subtitle: Text(
-            p['status_aktif'] ?? 'OFFLINE',
-            style: const TextStyle(color: Colors.grey),
-          ),
+          ],
         ),
       ),
     );

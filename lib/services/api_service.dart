@@ -5,18 +5,24 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiService {
-  // Gunakan 10.0.2.2 untuk emulator, atau IP Laptop (misal: 192.168.1.5) untuk HP fisik
+  // Gunakan 10.0.2.2 untuk emulator, atau IP Laptop untuk HP fisik.
   static const String baseUrl = 'http://10.0.2.2:8000/api';
 
-  // --- HELPER: AMBIL TOKEN DARI STORAGE ---
+  // --- HELPER: DATA STORAGE ---
   Future<String?> getToken() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString('token');
   }
 
-  // --- LOGIN ---
+  Future<int?> getUserId() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt('user_id');
+  }
+
+  // --- LOGIN: SIMPAN SEMUA KE LOKAL ---
   Future<bool> login(String username, String password) async {
     try {
+      debugPrint("--- MENCOBA LOGIN: $username ---");
       final response = await http.post(
         Uri.parse('$baseUrl/login'),
         body: {'username': username, 'password': password},
@@ -26,18 +32,32 @@ class ApiService {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final prefs = await SharedPreferences.getInstance();
+
         await prefs.setString('token', data['access_token']);
 
-        // Simpan metadata user untuk ditampilkan di UI
-        if (data['user'] != null && data['user']['personnel'] != null) {
-          await prefs.setString(
-            'nama_lengkap',
-            data['user']['personnel']['nama_lengkap'] ?? "Petugas",
-          );
-          await prefs.setString(
-            'pangkat',
-            data['user']['personnel']['pangkat'] ?? "-",
-          );
+        if (data['user'] != null) {
+          await prefs.setInt('user_id', data['user']['id']);
+          await prefs.setString('username', data['user']['username'] ?? "-");
+
+          if (data['user']['personnel'] != null) {
+            final p = data['user']['personnel'];
+            await prefs.setString(
+              'nama_lengkap',
+              p['nama_lengkap'] ?? "Petugas",
+            );
+            await prefs.setString('pangkat', p['pangkat'] ?? "-");
+            await prefs.setString('nrp', p['nrp'] ?? "-");
+            await prefs.setString(
+              'status_aktif',
+              p['status_aktif'] ?? "online",
+            );
+
+            if (p['foto_profil'] != null) {
+              String photoUrl =
+                  "http://10.0.2.2:8000/storage/${p['foto_profil']}";
+              await prefs.setString('foto_profil', photoUrl);
+            }
+          }
         }
         return true;
       }
@@ -48,50 +68,60 @@ class ApiService {
     }
   }
 
-  // --- LOGOUT ---
-  Future<bool> logout() async {
+  // --- UPDATE FOTO PROFIL ---
+  Future<String?> updateProfilePhoto(File imageFile) async {
     try {
       final token = await getToken();
-      final response = await http.post(
-        Uri.parse('$baseUrl/logout'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Accept': 'application/json',
-        },
+      var request = http.MultipartRequest(
+        'POST',
+        Uri.parse('$baseUrl/user/photo'),
       );
+      request.headers.addAll({
+        'Authorization': 'Bearer $token',
+        'Accept': 'application/json',
+      });
+      request.files.add(
+        await http.MultipartFile.fromPath('foto', imageFile.path),
+      );
+
+      var streamedResponse = await request.send();
+      var response = await http.Response.fromStream(streamedResponse);
+
       if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final String newUrl = data['url'];
         final prefs = await SharedPreferences.getInstance();
-        await prefs.clear();
-        return true;
+        await prefs.setString('foto_profil', newUrl);
+        return newUrl;
       }
-      return false;
+      return null;
     } catch (e) {
-      debugPrint("Error Logout: $e");
-      return false;
+      return null;
     }
   }
 
-  // --- AMBIL PROFIL USER ---
+  // --- AMBIL PROFIL (SYNC) ---
   Future<Map<String, dynamic>> getProfile() async {
     try {
       final token = await getToken();
-      final response = await http.get(
-        Uri.parse('$baseUrl/user'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Accept': 'application/json',
-        },
-      );
-      if (response.statusCode == 200) {
-        return jsonDecode(response.body);
-      }
+      final response = await http
+          .get(
+            Uri.parse('$baseUrl/user'),
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Accept': 'application/json',
+            },
+          )
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) return jsonDecode(response.body);
       throw Exception('Gagal profil');
     } catch (e) {
       throw Exception('Koneksi bermasalah: $e');
     }
   }
 
-  // --- UPDATE LOKASI REALTIME (TRACKING) ---
+  // --- UPDATE LOKASI ---
   Future<bool> updatePatrolStatus({
     required double lat,
     required double long,
@@ -114,29 +144,32 @@ class ApiService {
       );
       return response.statusCode == 200 || response.statusCode == 201;
     } catch (e) {
-      debugPrint("Error Update Tracking: $e");
       return false;
     }
   }
 
-  // --- AMBIL LOKASI PERSONEL LAIN UNTUK PETA ---
-  Future<List<dynamic>> getOtherLocations() async {
+  // --- AMBIL LOKASI REKAN ---
+  Future<List<dynamic>> getAllPersonnelLocations() async {
     try {
       final token = await getToken();
-      final response = await http.get(
-        Uri.parse('$baseUrl/locations'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Accept': 'application/json',
-        },
-      );
-      return response.statusCode == 200 ? jsonDecode(response.body) : [];
+      final response = await http
+          .get(
+            Uri.parse('$baseUrl/locations'),
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Accept': 'application/json',
+            },
+          )
+          .timeout(const Duration(seconds: 10));
+
+      if (response.statusCode == 200) return jsonDecode(response.body);
+      return [];
     } catch (e) {
       return [];
     }
   }
 
-  // --- KIRIM LAPORAN / ADUAN (MULTIPART UNTUK FOTO) ---
+  // --- KIRIM LAPORAN / ADUAN (MULTIPART) ---
   Future<bool> sendReport({
     required String judul,
     required String deskripsi,
@@ -152,60 +185,56 @@ class ApiService {
         'POST',
         Uri.parse('$baseUrl/reports'),
       );
-
       request.headers.addAll({
         'Authorization': 'Bearer $token',
         'Accept': 'application/json',
       });
 
-      // Mapping data sesuai field di Database/Controller Laravel
       request.fields['judul_kejadian'] = judul;
       request.fields['tipe_laporan'] = tipe;
       request.fields['deskripsi'] = deskripsi;
       request.fields['prioritas'] = prioritas;
       request.fields['latitude'] = lat.toString();
       request.fields['longitude'] = lng.toString();
-
-      // SINKRONISASI: Status awal wajib 'menunggu konfirmasi'
       request.fields['status_penanganan'] = 'menunggu konfirmasi';
 
-      // Lampirkan foto jika ada
       if (foto != null) {
         request.files.add(
           await http.MultipartFile.fromPath('foto_bukti', foto.path),
         );
       }
 
-      debugPrint("Mengirim laporan ke: ${request.url}");
       var streamedResponse = await request.send().timeout(
         const Duration(seconds: 20),
       );
       var response = await http.Response.fromStream(streamedResponse);
-
-      // LOG DEBUG: Cek ini di terminal jika status code bukan 200/201
-      debugPrint("Response Status: ${response.statusCode}");
-      debugPrint("Response Body: ${response.body}");
-
       return response.statusCode == 201 || response.statusCode == 200;
     } catch (e) {
-      debugPrint("Exception Send Report: $e");
       return false;
     }
   }
 
-  // --- WRAPPER UNTUK CHECKPOINT ---
-  Future<bool> kirimCheckpoint(double lat, double long) async {
+  // --- WRAPPER KIRIM ADUAN (YANG TADI HILANG) ---
+  Future<bool> kirimAduan({
+    required String judul,
+    required String isiLaporan,
+    required double lat,
+    required double lng,
+    String tipeLaporan = 'aduan/kejadian',
+    File? foto,
+  }) async {
     return await sendReport(
-      judul: 'Titik Checkpoint',
-      tipe: 'checkpoint',
-      deskripsi: 'Petugas melakukan scanning di titik ini.',
-      prioritas: 'rendah',
+      judul: judul,
+      deskripsi: isiLaporan,
+      tipe: tipeLaporan,
+      prioritas: 'sedang',
       lat: lat,
-      lng: long,
+      lng: lng,
+      foto: foto,
     );
   }
 
-  // --- AMBIL RIWAYAT LAPORAN SAYA ---
+  // --- AMBIL RIWAYAT LAPORAN (YANG TADI HILANG) ---
   Future<List<dynamic>> getHistoryLaporan() async {
     try {
       final token = await getToken();
@@ -226,59 +255,59 @@ class ApiService {
     }
   }
 
-  // --- AMBIL JADWAL TUGAS ---
+  // --- LAIN-LAIN ---
+  Future<bool> logout() async {
+    try {
+      final token = await getToken();
+      await http.post(
+        Uri.parse('$baseUrl/logout'),
+        headers: {'Authorization': 'Bearer $token'},
+      );
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.clear();
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   Future<List<dynamic>> getJadwal() async {
     try {
       final token = await getToken();
-      final response = await http.get(
+      final res = await http.get(
         Uri.parse('$baseUrl/jadwal-mobile'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Accept': 'application/json',
-        },
+        headers: {'Authorization': 'Bearer $token'},
       );
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        return data['data'] ?? [];
-      }
+      if (res.statusCode == 200) return jsonDecode(res.body)['data'] ?? [];
       return [];
     } catch (e) {
       return [];
     }
   }
 
-  // --- AMBIL INSTRUKSI TERBARU (NOTIFIKASI) ---
   Future<Map<String, dynamic>?> getLatestInstruction() async {
     try {
       final token = await getToken();
-      final response = await http.get(
+      final res = await http.get(
         Uri.parse('$baseUrl/latest-instruction'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Accept': 'application/json',
-        },
+        headers: {'Authorization': 'Bearer $token'},
       );
-      return response.statusCode == 200 ? jsonDecode(response.body) : null;
+      return res.statusCode == 200 ? jsonDecode(res.body) : null;
     } catch (e) {
       return null;
     }
   }
 
-  // --- AMBIL RINGKASAN JUMLAH TUGAS ---
   Future<Map<String, dynamic>> getRingkasan() async {
     try {
       final token = await getToken();
-      final response = await http.get(
+      final res = await http.get(
         Uri.parse('$baseUrl/ringkasan-laporan'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Accept': 'application/json',
-        },
+        headers: {'Authorization': 'Bearer $token'},
       );
-      if (response.statusCode == 200) {
-        return jsonDecode(response.body);
-      }
-      return {'laporan_count': 0, 'checkpoint_count': 0};
+      return res.statusCode == 200
+          ? jsonDecode(res.body)
+          : {'laporan_count': 0, 'checkpoint_count': 0};
     } catch (e) {
       return {'laporan_count': 0, 'checkpoint_count': 0};
     }
