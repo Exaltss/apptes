@@ -573,10 +573,10 @@ class _CheckpointScreenState extends State<CheckpointScreen> {
                                         strokeWidth: 3,
                                       ),
                                     )
-                                  : Row(
+                                  : const Row(
                                       mainAxisAlignment:
                                           MainAxisAlignment.center,
-                                      children: const [
+                                      children: [
                                         Icon(
                                           Icons.send,
                                           color: Colors.white,

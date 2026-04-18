@@ -1,111 +1,147 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../services/api_service.dart';
+import 'login_screen.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
-
   @override
   State<ProfileScreen> createState() => _ProfileScreenState();
 }
 
 class _ProfileScreenState extends State<ProfileScreen> {
-  final ApiService _apiService = ApiService();
-  final ImagePicker _picker = ImagePicker();
+  final _api = ApiService();
+  final _picker = ImagePicker();
 
-  // Data State
-  String nama = "Memuat...";
-  String pangkat = "...";
-  String nrp = "...";
+  String nama = '...';
+  String pangkat = '...';
+  String noWa = '...';
   String? fotoUrl;
-  String username = "...";
-  String status = "...";
+  String username = '...';
+  String status = '...';
 
   bool _isInitialLoading = true;
   bool _isUploading = false;
+  Timer? _syncTimer;
 
   @override
   void initState() {
     super.initState();
-    _loadLocalData(); // Prioritas: Ambil data dari memori HP (Instan)
+    _loadLocalData();
+    // Auto-sync setiap 30 detik
+    _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) {
+        _syncProfileFromServer();
+      }
+    });
   }
 
-  // --- 1. AMBIL DATA LOKAL (BIAR CEPAT) ---
+  @override
+  void dispose() {
+    _syncTimer?.cancel();
+    super.dispose();
+  }
+
   Future<void> _loadLocalData() async {
     final prefs = await SharedPreferences.getInstance();
+    if (!mounted) {
+      return;
+    }
     setState(() {
-      nama = prefs.getString('nama_lengkap') ?? "Petugas";
-      pangkat = prefs.getString('pangkat') ?? "-";
-      nrp = prefs.getString('nrp') ?? "-";
-      fotoUrl = prefs.getString('foto_profil');
-      username = prefs.getString('username') ?? "-";
-      status = prefs.getString('status_aktif') ?? "offline";
+      nama = prefs.getString('nama_lengkap') ?? 'Petugas';
+      pangkat = prefs.getString('pangkat') ?? '-';
+      noWa = prefs.getString('nrp') ?? '-';
+      username = prefs.getString('username') ?? '-';
+      status = prefs.getString('status_aktif') ?? 'offline';
+      final saved = prefs.getString('foto_profil');
+      fotoUrl = (saved != null && !saved.contains('10.0.2.2')) ? saved : null;
       _isInitialLoading = false;
     });
-    // Setelah data lokal muncul, tetap sync ke server di latar belakang
     _syncProfileFromServer();
   }
 
-  // --- 2. SYNC KE SERVER (LATAR BELAKANG) ---
   Future<void> _syncProfileFromServer() async {
     try {
-      final data = await _apiService.getProfile();
+      final data = await _api.getProfile();
       final p = data['personnel'];
-      if (p != null) {
-        final prefs = await SharedPreferences.getInstance();
-        setState(() {
-          nama = p['nama_lengkap'] ?? nama;
-          pangkat = p['pangkat'] ?? pangkat;
-          nrp = p['nrp'] ?? nrp;
-          status = p['status_aktif'] ?? status;
-          // Perbarui foto jika ada perubahan di server
-          if (p['foto_profil'] != null) {
-            fotoUrl = "http://10.0.2.2:8000/storage/${p['foto_profil']}";
-            prefs.setString('foto_profil', fotoUrl!);
-          }
-        });
+      if (p == null || !mounted) {
+        return;
       }
+      final prefs = await SharedPreferences.getInstance();
+      String? newFoto;
+      if (p['foto_profil'] != null && p['foto_profil'].toString().isNotEmpty) {
+        final fp = p['foto_profil'].toString();
+        newFoto = fp.startsWith('http')
+            ? fp
+            : fp.startsWith('profile_photos/')
+            ? 'https://tulgungpatrol.my.id/public/$fp'
+            : 'https://tulgungpatrol.my.id/storage/$fp';
+        await prefs.setString('foto_profil', newFoto);
+      }
+      setState(() {
+        nama = p['nama_lengkap'] ?? nama;
+        pangkat = p['pangkat'] ?? pangkat;
+        noWa = p['nrp'] ?? noWa;
+        status = p['status_aktif'] ?? status;
+        if (newFoto != null) {
+          fotoUrl = newFoto;
+        }
+      });
     } catch (e) {
-      debugPrint("Gagal sync profil: $e");
+      debugPrint('Sync profil error: $e');
     }
   }
 
-  // --- 3. LOGIKA PILIH FOTO ---
-  Future<void> _pickImage(ImageSource source) async {
-    final XFile? image = await _picker.pickImage(
-      source: source,
-      imageQuality: 50, // Kompres agar upload cepat
-    );
-
-    if (image != null) {
-      _uploadPhoto(File(image.path));
+  Future<void> _openWA(String noHp) async {
+    if (noHp.isEmpty || noHp == '-') {
+      return;
     }
-  }
-
-  // --- 4. UPLOAD FOTO KE SERVER ---
-  Future<void> _uploadPhoto(File imageFile) async {
-    setState(() => _isUploading = true);
-
-    final newUrl = await _apiService.updateProfilePhoto(imageFile);
-
-    setState(() => _isUploading = false);
-
-    if (newUrl != null) {
-      setState(() => fotoUrl = newUrl);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Foto profil berhasil diperbarui")),
-        );
-      }
+    // Pastikan format international (628xxx)
+    String formatted = noHp.replaceAll(RegExp(r'\s+|-'), '');
+    if (formatted.startsWith('0')) {
+      formatted = '62${formatted.substring(1)}';
+    }
+    final uri = Uri.parse('https://wa.me/$formatted');
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
     } else {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Gagal mengunggah foto ke server")),
+          const SnackBar(content: Text('Tidak dapat membuka WhatsApp')),
         );
       }
     }
+  }
+
+  Future<void> _pickImage(ImageSource source) async {
+    final img = await _picker.pickImage(source: source, imageQuality: 50);
+    if (img != null) {
+      await _uploadPhoto(File(img.path));
+    }
+  }
+
+  Future<void> _uploadPhoto(File file) async {
+    setState(() => _isUploading = true);
+    final url = await _api.updateProfilePhoto(file);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isUploading = false;
+      if (url != null) fotoUrl = url;
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          url != null ? 'Foto berhasil diperbarui' : 'Gagal mengunggah foto',
+        ),
+        backgroundColor: url != null ? Colors.green : Colors.red,
+      ),
+    );
   }
 
   void _showPickerOptions() {
@@ -115,13 +151,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (ctx) => SafeArea(
+      builder: (_) => SafeArea(
         child: Wrap(
           children: [
             const Padding(
-              padding: EdgeInsets.all(20),
+              padding: EdgeInsets.all(18),
               child: Text(
-                "Ganti Foto Profil",
+                'Ganti Foto Profil',
                 style: TextStyle(
                   color: Colors.white,
                   fontWeight: FontWeight.bold,
@@ -134,22 +170,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 color: Colors.blueAccent,
               ),
               title: const Text(
-                "Pilih dari Galeri",
+                'Pilih dari Galeri',
                 style: TextStyle(color: Colors.white),
               ),
               onTap: () {
-                Navigator.pop(ctx);
+                Navigator.pop(context);
                 _pickImage(ImageSource.gallery);
               },
             ),
             ListTile(
               leading: const Icon(Icons.camera_alt, color: Colors.blueAccent),
               title: const Text(
-                "Ambil Kamera",
+                'Ambil dari Kamera',
                 style: TextStyle(color: Colors.white),
               ),
               onTap: () {
-                Navigator.pop(ctx);
+                Navigator.pop(context);
                 _pickImage(ImageSource.camera);
               },
             ),
@@ -160,38 +196,39 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  void _handleLogout() async {
-    bool confirm =
-        await showDialog(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            backgroundColor: const Color(0xFF222B36),
-            title: const Text("Logout", style: TextStyle(color: Colors.white)),
-            content: const Text(
-              "Apakah Anda yakin ingin keluar?",
-              style: TextStyle(color: Colors.grey),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: const Text("Batal"),
-              ),
-              TextButton(
-                onPressed: () => Navigator.pop(ctx, true),
-                child: const Text(
-                  "Ya, Keluar",
-                  style: TextStyle(color: Colors.red),
-                ),
-              ),
-            ],
+  Future<void> _handleLogout() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF222B36),
+        title: const Text('Logout', style: TextStyle(color: Colors.white)),
+        content: const Text(
+          'Yakin ingin keluar?',
+          style: TextStyle(color: Colors.grey),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Batal'),
           ),
-        ) ??
-        false;
-
-    if (confirm) {
-      await _apiService.logout();
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text(
+              'Ya, Keluar',
+              style: TextStyle(color: Colors.red),
+            ),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await _api.logout();
       if (mounted) {
-        Navigator.pushNamedAndRemoveUntil(context, '/login', (route) => false);
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const LoginScreen()),
+          (_) => false,
+        );
       }
     }
   }
@@ -202,12 +239,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
       backgroundColor: const Color(0xFF151B25),
       appBar: AppBar(
         title: const Text(
-          "Profil Saya",
+          'Profil Saya',
           style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
         ),
         backgroundColor: const Color(0xFF151B25),
         elevation: 0,
         centerTitle: true,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh, color: Colors.yellow),
+            onPressed: _syncProfileFromServer,
+          ),
+        ],
       ),
       body: _isInitialLoading
           ? const Center(child: CircularProgressIndicator(color: Colors.yellow))
@@ -218,16 +261,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 padding: const EdgeInsets.all(25),
                 child: Column(
                   children: [
-                    // --- HEADER: FOTO PROFIL DENGAN TOMBOL EDIT ---
+                    // ── FOTO PROFIL ──
                     Center(
                       child: Stack(
                         children: [
                           Container(
-                            padding: const EdgeInsets.all(4),
+                            padding: const EdgeInsets.all(3),
                             decoration: BoxDecoration(
                               shape: BoxShape.circle,
                               border: Border.all(
-                                color: Colors.blueAccent.withValues(alpha: 0.5),
+                                color: Colors.blueAccent.withValues(alpha: .5),
                                 width: 2,
                               ),
                             ),
@@ -253,8 +296,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               ),
                             ),
                           Positioned(
-                            bottom: 5,
-                            right: 5,
+                            bottom: 4,
+                            right: 4,
                             child: GestureDetector(
                               onTap: _showPickerOptions,
                               child: Container(
@@ -274,7 +317,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         ],
                       ),
                     ),
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 18),
                     Text(
                       nama,
                       style: const TextStyle(
@@ -287,31 +330,32 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       pangkat,
                       style: const TextStyle(color: Colors.grey, fontSize: 16),
                     ),
-                    const SizedBox(height: 30),
+                    const SizedBox(height: 28),
 
-                    // --- DETAIL INFO BOXES ---
-                    _buildInfoTile(Icons.badge, "NRP", nrp),
+                    // ── INFO TILES ──
+                    // No. WhatsApp — bisa di-tap untuk buka chat
+                    _buildWaTile(noWa),
                     _buildInfoTile(
                       Icons.account_circle,
-                      "USERNAME AKUN",
+                      'USERNAME AKUN',
                       username,
                     ),
                     _buildInfoTile(
                       Icons.info_outline,
-                      "STATUS SAAT INI",
+                      'STATUS SAAT INI',
                       status.toUpperCase(),
                     ),
 
                     const SizedBox(height: 40),
 
-                    // --- TOMBOL LOGOUT ---
+                    // ── TOMBOL LOGOUT ──
                     SizedBox(
                       width: double.infinity,
                       height: 55,
                       child: ElevatedButton.icon(
                         style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.redAccent.withValues(
-                            alpha: 0.1,
+                            alpha: .1,
                           ),
                           foregroundColor: Colors.redAccent,
                           side: const BorderSide(color: Colors.redAccent),
@@ -322,7 +366,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         onPressed: _handleLogout,
                         icon: const Icon(Icons.logout),
                         label: const Text(
-                          "LOGOUT",
+                          'LOGOUT',
                           style: TextStyle(fontWeight: FontWeight.bold),
                         ),
                       ),
@@ -331,6 +375,77 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 ),
               ),
             ),
+    );
+  }
+
+  // Tile No. WA khusus dengan tap-to-open-WA
+  Widget _buildWaTile(String noHp) {
+    return GestureDetector(
+      onTap: () => _openWA(noHp),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 15),
+        padding: const EdgeInsets.all(15),
+        decoration: BoxDecoration(
+          color: const Color(0xFF222B36),
+          borderRadius: BorderRadius.circular(15),
+          border: Border.all(
+            color: Colors.green.withValues(alpha: .3),
+            width: 1,
+          ),
+        ),
+        child: Row(
+          children: [
+            // Menggunakan icon chat sebagai pengganti logo WA bawaan
+            const Icon(
+              Icons.chat_bubble_outline,
+              color: Colors.greenAccent,
+              size: 24,
+            ),
+            const SizedBox(width: 15),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'NO. WHATSAPP',
+                    style: TextStyle(color: Colors.grey, fontSize: 10),
+                  ),
+                  Text(
+                    noHp,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.green.withValues(alpha: .15),
+                borderRadius: BorderRadius.circular(20),
+              ),
+              child: const Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.chat, color: Colors.greenAccent, size: 14),
+                  SizedBox(width: 4),
+                  Text(
+                    'Chat',
+                    style: TextStyle(
+                      color: Colors.greenAccent,
+                      fontSize: 12,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

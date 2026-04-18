@@ -1,7 +1,30 @@
-import 'package:aplikasi_track_digital/pages/login_screen.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'services/background_service.dart';
+import 'pages/login_screen.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Init local notifications (wajib untuk Android 8+)
+  final flnp = FlutterLocalNotificationsPlugin();
+  await flnp.initialize(
+    const InitializationSettings(
+      android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+      iOS: DarwinInitializationSettings(),
+    ),
+  );
+
+  // Request permission notifikasi (Android 13+)
+  await flnp
+      .resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin
+      >()
+      ?.requestNotificationsPermission();
+
+  // Init background service (notification channel dibuat di sini)
+  await initBackgroundService();
+
   runApp(const MyApp());
 }
 
@@ -12,7 +35,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Patrol App',
+      title: 'Patrol Digital',
       theme: ThemeData(
         scaffoldBackgroundColor: const Color(0xFF151B25),
         fontFamily: 'Roboto',
@@ -27,7 +50,8 @@ class MyApp extends StatelessWidget {
           ),
         ),
       ),
-      home: LoginScreen(), // Ganti MainScreen() menjadi LoginPage()
+      routes: {'/login': (_) => const LoginScreen()},
+      home: const LoginScreen(),
     );
   }
 }

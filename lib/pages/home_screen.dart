@@ -8,6 +8,7 @@ import 'checkpoint_screen.dart';
 import 'history_screen.dart';
 import 'map_screen.dart';
 import 'profile_screen.dart';
+import '../services/background_service.dart';
 
 enum PatrolStatus { idle, patrolling, standby, emergency }
 
@@ -22,7 +23,6 @@ class _HomeScreenState extends State<HomeScreen> {
   double? targetLat;
   double? targetLng;
 
-  // Fungsi untuk berpindah tab secara aman dari halaman anak
   void _changeTab(int index) {
     setState(() {
       _currentIndex = index;
@@ -45,7 +45,6 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     final List<Widget> pages = [
       BerandaTab(onNavigateToMap: navigateToMap),
-      // Kita kirim fungsi _changeTab ke AduanScreen
       AduanScreen(onSuccess: () => _changeTab(0)),
       const HistoryScreen(),
       MapScreen(initialLat: targetLat, initialLng: targetLng),
@@ -68,7 +67,7 @@ class _HomeScreenState extends State<HomeScreen> {
             icon: Icon(Icons.home_filled),
             label: 'Beranda',
           ),
-          BottomNavigationBarItem(icon: Icon(Icons.campaign), label: 'Aduan'),
+          BottomNavigationBarItem(icon: Icon(Icons.campaign), label: 'Laporan'),
           BottomNavigationBarItem(icon: Icon(Icons.history), label: 'Riwayat'),
           BottomNavigationBarItem(icon: Icon(Icons.map), label: 'Peta'),
           BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Profil'),
@@ -78,7 +77,6 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-// --- BAGIAN BERANDA TAB (DENGAN LOGIKA GPS SAAT MULAI) ---
 class BerandaTab extends StatefulWidget {
   final Function(double, double) onNavigateToMap;
   const BerandaTab({super.key, required this.onNavigateToMap});
@@ -90,10 +88,14 @@ class _BerandaTabState extends State<BerandaTab> {
   PatrolStatus _status = PatrolStatus.idle;
   String _fullname = "Memuat...";
   String _pangkat = "";
+  String? _fotoUrl;
   bool _isLoading = false;
   List<dynamic> _jadwalList = [];
   int _checkpointCount = 0;
+
+  final List<Map<String, dynamic>> _notifications = [];
   int _lastNotifId = 0;
+
   StreamSubscription<Position>? _positionStream;
   Timer? _pollingTimer;
 
@@ -101,6 +103,7 @@ class _BerandaTabState extends State<BerandaTab> {
   void initState() {
     super.initState();
     _loadUserData();
+    _setInitialOffline();
     _pollingTimer = Timer.periodic(const Duration(seconds: 10), (t) {
       if (mounted) {
         _fetchSyncData();
@@ -116,82 +119,221 @@ class _BerandaTabState extends State<BerandaTab> {
     super.dispose();
   }
 
+  Future<void> _setInitialOffline() async {
+    await ApiService().updatePatrolStatus(lat: 0, long: 0, status: 'offline');
+  }
+
   Future<void> _loadUserData() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
     if (mounted) {
       setState(() {
         _fullname = prefs.getString('nama_lengkap') ?? "Petugas";
         _pangkat = prefs.getString('pangkat') ?? "Anggota";
+
+        final savedUrl = prefs.getString('foto_profil');
+        _fotoUrl = (savedUrl != null && !savedUrl.contains('10.0.2.2'))
+            ? savedUrl
+            : null;
       });
     }
     _fetchSyncData();
   }
 
   Future<void> _fetchSyncData() async {
-    final j = await ApiService().getJadwal();
-    final r = await ApiService().getRingkasan();
-    if (mounted) {
-      setState(() {
-        _jadwalList = j;
-        _checkpointCount = r['checkpoint_count'] ?? 0;
-      });
+    try {
+      final j = await ApiService().getJadwal();
+      final r = await ApiService().getRingkasan();
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+
+      final savedUrl = prefs.getString('foto_profil');
+      final latestFoto = (savedUrl != null && !savedUrl.contains('10.0.2.2'))
+          ? savedUrl
+          : null;
+
+      if (mounted) {
+        setState(() {
+          _jadwalList = j;
+          _checkpointCount = r['checkpoint_count'] ?? 0;
+          _fotoUrl = latestFoto;
+        });
+      }
+    } catch (e) {
+      debugPrint("Refresh Data Error: $e");
     }
   }
 
   Future<void> _checkInstructions() async {
     final latest = await ApiService().getLatestInstruction();
     if (latest != null && (latest['id'] ?? 0) > _lastNotifId) {
-      _lastNotifId = latest['id'];
-      _showNotif(latest['judul'], latest['isi'], latest['tipe']);
+      setState(() {
+        _lastNotifId = latest['id'];
+        _notifications.insert(0, latest);
+      });
+
+      if (latest['tipe'] == 'darurat' ||
+          latest['tipe_instruksi'] == 'darurat') {
+        _showEmergencyPriorityDialog(latest);
+      }
     }
   }
 
-  void _showNotif(String title, String body, String type) {
+  void _showEmergencyPriorityDialog(Map<String, dynamic> data) {
     if (!mounted) return;
     showDialog(
       context: context,
+      barrierDismissible: false,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFF222B36),
-        title: Text(
-          title,
-          style: TextStyle(
-            color: type == 'darurat' ? Colors.red : Colors.yellow,
-            fontWeight: FontWeight.bold,
-          ),
+        backgroundColor: const Color(0xFF8B0000),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(20),
+          side: const BorderSide(color: Colors.white, width: 2),
         ),
-        content: Text(body, style: const TextStyle(color: Colors.white)),
+        title: const Row(
+          children: [
+            Icon(Icons.warning_rounded, color: Colors.white, size: 30),
+            SizedBox(width: 10),
+            Text(
+              "PERINTAH DARURAT",
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              data['judul'] ?? "Prioritas Tinggi",
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              data['isi'] ?? "-",
+              style: const TextStyle(color: Colors.white70),
+            ),
+          ],
+        ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("OK"),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.white,
+              foregroundColor: Colors.red,
+            ),
+            onPressed: () {
+              Navigator.pop(ctx);
+              if (data['latitude'] != null) {
+                widget.onNavigateToMap(
+                  double.parse(data['latitude'].toString()),
+                  double.parse(data['longitude'].toString()),
+                );
+              }
+            },
+            child: const Text(
+              "LIHAT LOKASI",
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
           ),
         ],
       ),
     );
   }
 
-  // --- MODIFIKASI: LOGIKA GPS SAAT TEKAN MULAI ---
+  void _showNotificationHistory() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1F2937),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => Container(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          children: [
+            const Text(
+              "INSTRUKSI MASUK",
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 16,
+              ),
+            ),
+            const Divider(color: Colors.white12),
+            Expanded(
+              child: _notifications.isEmpty
+                  ? const Center(
+                      child: Text(
+                        "Belum ada instruksi baru",
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                    )
+                  : ListView.builder(
+                      itemCount: _notifications.length,
+                      itemBuilder: (c, i) {
+                        final item = _notifications[i];
+                        bool isUrgent = item['tipe'] == 'darurat';
+                        return ListTile(
+                          leading: Icon(
+                            Icons.info_outline,
+                            color: isUrgent ? Colors.red : Colors.yellow,
+                          ),
+                          title: Text(
+                            item['judul'] ?? "-",
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          subtitle: Text(
+                            item['isi'] ?? "-",
+                            style: const TextStyle(
+                              color: Colors.grey,
+                              fontSize: 12,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: const Icon(
+                            Icons.chevron_right,
+                            color: Colors.white24,
+                          ),
+                          onTap: () {
+                            Navigator.pop(ctx);
+                            if (item['latitude'] != null) {
+                              widget.onNavigateToMap(
+                                double.parse(item['latitude'].toString()),
+                                double.parse(item['longitude'].toString()),
+                              );
+                            }
+                          },
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _handleMainTap() async {
     if (_status == PatrolStatus.idle) {
-      // 1. Cek apakah GPS (Service Lokasi) di HP sudah aktif
       bool isLocationEnabled = await Geolocator.isLocationServiceEnabled();
-
       if (!isLocationEnabled) {
-        // 2. Jika mati, tampilkan dialog notifikasi aktifkan GPS
-        if (mounted) {
-          _showGpsActivationDialog();
-        }
+        if (mounted) _showGpsActivationDialog();
         return;
       }
-
-      // 3. Jika sudah aktif, cek izin (Permissions)
       LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
         if (permission == LocationPermission.denied) return;
       }
-
-      // 4. Lanjut Update Backend
       _updateBackend('patroli', PatrolStatus.patrolling);
     } else if (_status == PatrolStatus.patrolling) {
       _showStopDialog();
@@ -200,33 +342,28 @@ class _BerandaTabState extends State<BerandaTab> {
     }
   }
 
-  // Dialog Notifikasi Aktifkan GPS
   void _showGpsActivationDialog() {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: const Color(0xFF222B36),
-        title: const Row(
-          children: [
-            Icon(Icons.location_off, color: Colors.red),
-            SizedBox(width: 10),
-            Text("GPS Tidak Aktif", style: TextStyle(color: Colors.white)),
-          ],
+        title: const Text(
+          "GPS Tidak Aktif",
+          style: TextStyle(color: Colors.white),
         ),
         content: const Text(
-          "Mohon aktifkan Lokasi (GPS) pada ponsel Anda untuk memulai patroli.",
-          style: TextStyle(color: Colors.white70),
+          "Layanan Lokasi (GPS) diperlukan untuk memulai patroli.",
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text("BATAL", style: TextStyle(color: Colors.grey)),
+            child: const Text("BATAL"),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.yellow),
             onPressed: () {
               Navigator.pop(ctx);
-              Geolocator.openLocationSettings(); // Membuka pengaturan GPS HP
+              Geolocator.openLocationSettings();
             },
             child: const Text(
               "AKTIFKAN",
@@ -244,25 +381,66 @@ class _BerandaTabState extends State<BerandaTab> {
   Future<void> _updateBackend(String bStat, PatrolStatus uiStat) async {
     setState(() => _isLoading = true);
     try {
-      Position p = await Geolocator.getCurrentPosition(
-        locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
-        ),
-      );
-      bool ok = await ApiService().updatePatrolStatus(
-        lat: p.latitude,
-        long: p.longitude,
+      // Cek & minta izin GPS
+      bool enabled = await Geolocator.isLocationServiceEnabled();
+      if (!enabled) {
+        if (mounted) _showGpsActivationDialog();
+        setState(() => _isLoading = false);
+        return;
+      }
+
+      LocationPermission perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) {
+        perm = await Geolocator.requestPermission();
+      }
+      if (perm == LocationPermission.deniedForever) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Izin GPS ditolak permanen. Buka Pengaturan.'),
+              backgroundColor: Colors.red,
+            ),
+          );
+          await Geolocator.openAppSettings();
+        }
+        setState(() => _isLoading = false);
+        return;
+      }
+
+      // Ambil posisi
+      Position? p;
+      try {
+        p = await Geolocator.getCurrentPosition(
+          locationSettings: const LocationSettings(
+            accuracy: LocationAccuracy.high,
+          ),
+        ).timeout(const Duration(seconds: 10));
+      } catch (_) {
+        p = await Geolocator.getLastKnownPosition();
+      }
+
+      final lat = p?.latitude ?? -8.0667;
+      final lng = p?.longitude ?? 111.9000;
+
+      final ok = await ApiService().updatePatrolStatus(
+        lat: lat,
+        long: lng,
         status: bStat,
       );
-      if (ok && mounted) {
+
+      if (!mounted) return;
+
+      if (ok) {
         setState(() => _status = uiStat);
+
         if (uiStat != PatrolStatus.idle) {
+          await startBackgroundService(bStat);
           _positionStream?.cancel();
           _positionStream =
               Geolocator.getPositionStream(
                 locationSettings: const LocationSettings(
                   accuracy: LocationAccuracy.high,
-                  distanceFilter: 10,
+                  distanceFilter: 3,
                 ),
               ).listen((pos) {
                 ApiService().updatePatrolStatus(
@@ -270,13 +448,27 @@ class _BerandaTabState extends State<BerandaTab> {
                   long: pos.longitude,
                   status: _statusString(),
                 );
+                updateBackgroundStatus(_statusString());
               });
         } else {
           _positionStream?.cancel();
+          await stopBackgroundService();
         }
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Gagal update status. Cek koneksi.'),
+            backgroundColor: Colors.orange,
+          ),
+        );
       }
     } catch (e) {
-      debugPrint("Error: $e");
+      debugPrint('Error _updateBackend: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -386,10 +578,24 @@ class _BerandaTabState extends State<BerandaTab> {
   Widget _buildHeaderUI() {
     return Row(
       children: [
-        const CircleAvatar(
-          radius: 25,
-          backgroundColor: Colors.yellow,
-          child: Icon(Icons.person, color: Colors.black),
+        Container(
+          padding: const EdgeInsets.all(2),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: Colors.yellow.withValues(alpha: 0.5),
+              width: 2,
+            ),
+          ),
+          child: CircleAvatar(
+            radius: 25,
+            backgroundColor: const Color(0xFF222B36),
+            key: ValueKey(_fotoUrl),
+            backgroundImage: _fotoUrl != null ? NetworkImage(_fotoUrl!) : null,
+            child: _fotoUrl == null
+                ? const Icon(Icons.person, color: Colors.yellow)
+                : null,
+          ),
         ),
         const SizedBox(width: 15),
         Column(
@@ -410,23 +616,39 @@ class _BerandaTabState extends State<BerandaTab> {
           ],
         ),
         const Spacer(),
-        Stack(
-          children: [
-            const Icon(Icons.notifications, color: Colors.grey, size: 30),
-            if (_lastNotifId > 0)
-              Positioned(
-                right: 0,
-                top: 0,
-                child: Container(
-                  padding: const EdgeInsets.all(2),
-                  decoration: const BoxDecoration(
-                    color: Colors.red,
-                    shape: BoxShape.circle,
+        GestureDetector(
+          onTap: _showNotificationHistory,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              const Icon(Icons.notifications, color: Colors.grey, size: 30),
+              if (_notifications.isNotEmpty)
+                Positioned(
+                  right: -2,
+                  top: -2,
+                  child: Container(
+                    padding: const EdgeInsets.all(4),
+                    decoration: const BoxDecoration(
+                      color: Colors.red,
+                      shape: BoxShape.circle,
+                    ),
+                    constraints: const BoxConstraints(
+                      minWidth: 16,
+                      minHeight: 16,
+                    ),
+                    child: Text(
+                      _notifications.length.toString(),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 9,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
                   ),
-                  constraints: const BoxConstraints(minWidth: 8, minHeight: 8),
                 ),
-              ),
-          ],
+            ],
+          ),
         ),
       ],
     );
@@ -444,7 +666,7 @@ class _BerandaTabState extends State<BerandaTab> {
           Icon(Icons.location_on, color: a ? Colors.blue : Colors.grey),
           const SizedBox(width: 10),
           Text(
-            a ? "Sharelock Aktif" : "Offline",
+            a ? "Terdeteksi di Peta (Online)" : "Tidak Terdeteksi (Offline)",
             style: const TextStyle(
               color: Colors.white,
               fontWeight: FontWeight.bold,
@@ -474,7 +696,7 @@ class _BerandaTabState extends State<BerandaTab> {
     String t = "Mulai";
     if (_status == PatrolStatus.patrolling) {
       c = const Color(0xFF5DD35D);
-      t = "Berhenti";
+      t = "Selesai";
     } else if (_status == PatrolStatus.standby) {
       c = const Color(0xFFD48C56);
       t = "Lanjut";
@@ -583,11 +805,7 @@ class _BerandaTabState extends State<BerandaTab> {
                       widget.onNavigateToMap(lat, lng);
                     }
                   },
-                  leading: const Icon(
-                    Icons.map_rounded,
-                    color: Colors.yellow,
-                    size: 24,
-                  ),
+                  leading: const Icon(Icons.map_rounded, color: Colors.yellow),
                   title: Text(
                     j['lokasi_target'] ?? 'Lokasi Belum Diatur',
                     style: const TextStyle(

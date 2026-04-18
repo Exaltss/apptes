@@ -2,126 +2,139 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:http_parser/http_parser.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class ApiService {
-  // Gunakan 10.0.2.2 untuk emulator, atau IP Laptop untuk HP fisik.
-  static const String baseUrl = 'http://10.0.2.2:8000/api';
+  static const String domain = 'https://tulgungpatrol.my.id';
+  static const String baseUrl = '$domain/api';
 
-  // --- HELPER: DATA STORAGE ---
-  Future<String?> getToken() async {
+  static Future<String?> getToken() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getString('token');
   }
 
-  Future<int?> getUserId() async {
-    final prefs = await SharedPreferences.getInstance();
-    return prefs.getInt('user_id');
+  // ── Helper: deteksi apakah file adalah video ──
+  static bool _isVideo(String path) {
+    final ext = path.split('.').last.toLowerCase();
+    return ['mp4', 'mov', 'avi', '3gp', 'mkv', 'webm'].contains(ext);
   }
 
-  // --- LOGIN: SIMPAN SEMUA KE LOKAL ---
+  static MediaType _mediaType(String path) {
+    final ext = path.split('.').last.toLowerCase();
+    if (_isVideo(path)) {
+      return MediaType('video', ext == 'mov' ? 'quicktime' : ext);
+    }
+    return MediaType('image', ext == 'jpg' ? 'jpeg' : ext);
+  }
+
+  // ── LOGIN ──
   Future<bool> login(String username, String password) async {
     try {
-      debugPrint("--- MENCOBA LOGIN: $username ---");
-      final response = await http.post(
-        Uri.parse('$baseUrl/login'),
-        body: {'username': username, 'password': password},
-        headers: {'Accept': 'application/json'},
-      );
+      debugPrint('--- LOGIN: $username ---');
+      final res = await http
+          .post(
+            Uri.parse('$baseUrl/login'),
+            body: {'username': username, 'password': password},
+            headers: {'Accept': 'application/json'},
+          )
+          .timeout(const Duration(seconds: 15));
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
         final prefs = await SharedPreferences.getInstance();
-
         await prefs.setString('token', data['access_token']);
 
         if (data['user'] != null) {
           await prefs.setInt('user_id', data['user']['id']);
-          await prefs.setString('username', data['user']['username'] ?? "-");
-
-          if (data['user']['personnel'] != null) {
-            final p = data['user']['personnel'];
+          await prefs.setString('username', data['user']['username'] ?? '-');
+          final p = data['user']['personnel'];
+          if (p != null) {
             await prefs.setString(
               'nama_lengkap',
-              p['nama_lengkap'] ?? "Petugas",
+              p['nama_lengkap'] ?? 'Petugas',
             );
-            await prefs.setString('pangkat', p['pangkat'] ?? "-");
-            await prefs.setString('nrp', p['nrp'] ?? "-");
+            await prefs.setString('pangkat', p['pangkat'] ?? '-');
+            await prefs.setString('nrp', p['nrp'] ?? '-');
             await prefs.setString(
               'status_aktif',
-              p['status_aktif'] ?? "online",
+              p['status_aktif'] ?? 'online',
             );
-
-            if (p['foto_profil'] != null) {
-              String photoUrl =
-                  "http://10.0.2.2:8000/storage/${p['foto_profil']}";
-              await prefs.setString('foto_profil', photoUrl);
+            if (p['foto_profil'] != null &&
+                p['foto_profil'].toString().isNotEmpty) {
+              final fp = p['foto_profil'].toString();
+              final url = fp.startsWith('http')
+                  ? fp
+                  : fp.startsWith('profile_photos/')
+                  ? '$domain/public/$fp'
+                  : '$domain/storage/$fp';
+              await prefs.setString('foto_profil', url);
             }
           }
         }
+        debugPrint('Login OK');
         return true;
       }
+      debugPrint('Login gagal: ${res.statusCode} ${res.body}');
       return false;
     } catch (e) {
-      debugPrint("Error Login: $e");
+      debugPrint('Login error: $e');
       return false;
     }
   }
 
-  // --- UPDATE FOTO PROFIL ---
-  Future<String?> updateProfilePhoto(File imageFile) async {
+  // ── UPDATE FOTO PROFIL ──
+  Future<String?> updateProfilePhoto(File file) async {
     try {
       final token = await getToken();
-      var request = http.MultipartRequest(
+      final req = http.MultipartRequest(
         'POST',
         Uri.parse('$baseUrl/user/photo'),
       );
-      request.headers.addAll({
+      req.headers.addAll({
         'Authorization': 'Bearer $token',
         'Accept': 'application/json',
       });
-      request.files.add(
-        await http.MultipartFile.fromPath('foto', imageFile.path),
+      req.files.add(
+        await http.MultipartFile.fromPath(
+          'foto',
+          file.path,
+          contentType: _mediaType(file.path),
+        ),
       );
-
-      var streamedResponse = await request.send();
-      var response = await http.Response.fromStream(streamedResponse);
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final String newUrl = data['url'];
+      final streamed = await req.send().timeout(const Duration(seconds: 60));
+      final res = await http.Response.fromStream(streamed);
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        final url = data['url'].toString();
         final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('foto_profil', newUrl);
-        return newUrl;
+        await prefs.setString('foto_profil', url);
+        return url;
       }
       return null;
     } catch (e) {
+      debugPrint('Upload foto error: $e');
       return null;
     }
   }
 
-  // --- AMBIL PROFIL (SYNC) ---
+  // ── AMBIL PROFIL ──
   Future<Map<String, dynamic>> getProfile() async {
-    try {
-      final token = await getToken();
-      final response = await http
-          .get(
-            Uri.parse('$baseUrl/user'),
-            headers: {
-              'Authorization': 'Bearer $token',
-              'Accept': 'application/json',
-            },
-          )
-          .timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200) return jsonDecode(response.body);
-      throw Exception('Gagal profil');
-    } catch (e) {
-      throw Exception('Koneksi bermasalah: $e');
-    }
+    final token = await getToken();
+    final res = await http
+        .get(
+          Uri.parse('$baseUrl/user'),
+          headers: {
+            'Authorization': 'Bearer $token',
+            'Accept': 'application/json',
+          },
+        )
+        .timeout(const Duration(seconds: 10));
+    if (res.statusCode == 200) return jsonDecode(res.body);
+    throw Exception('Gagal memuat profil');
   }
 
-  // --- UPDATE LOKASI ---
+  // ── UPDATE LOKASI ──
   Future<bool> updatePatrolStatus({
     required double lat,
     required double long,
@@ -129,30 +142,32 @@ class ApiService {
   }) async {
     try {
       final token = await getToken();
-      final response = await http.post(
-        Uri.parse('$baseUrl/tracking'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: jsonEncode({
-          'latitude': lat,
-          'longitude': long,
-          'status_aktif': status,
-        }),
-      );
-      return response.statusCode == 200 || response.statusCode == 201;
-    } catch (e) {
+      final res = await http
+          .post(
+            Uri.parse('$baseUrl/tracking'),
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            body: jsonEncode({
+              'latitude': lat,
+              'longitude': long,
+              'status_aktif': status,
+            }),
+          )
+          .timeout(const Duration(seconds: 8));
+      return res.statusCode == 200 || res.statusCode == 201;
+    } catch (_) {
       return false;
     }
   }
 
-  // --- AMBIL LOKASI REKAN ---
+  // ── LOKASI REKAN ──
   Future<List<dynamic>> getAllPersonnelLocations() async {
     try {
       final token = await getToken();
-      final response = await http
+      final res = await http
           .get(
             Uri.parse('$baseUrl/locations'),
             headers: {
@@ -160,16 +175,15 @@ class ApiService {
               'Accept': 'application/json',
             },
           )
-          .timeout(const Duration(seconds: 10));
-
-      if (response.statusCode == 200) return jsonDecode(response.body);
+          .timeout(const Duration(seconds: 8));
+      if (res.statusCode == 200) return jsonDecode(res.body);
       return [];
-    } catch (e) {
+    } catch (_) {
       return [];
     }
   }
 
-  // --- KIRIM LAPORAN / ADUAN (MULTIPART) ---
+  // ── KIRIM LAPORAN / ADUAN (FOTO & VIDEO) ──
   Future<bool> sendReport({
     required String judul,
     required String deskripsi,
@@ -181,40 +195,45 @@ class ApiService {
   }) async {
     try {
       final token = await getToken();
-      var request = http.MultipartRequest(
-        'POST',
-        Uri.parse('$baseUrl/reports'),
-      );
-      request.headers.addAll({
+      final req = http.MultipartRequest('POST', Uri.parse('$baseUrl/reports'));
+      req.headers.addAll({
         'Authorization': 'Bearer $token',
         'Accept': 'application/json',
       });
 
-      request.fields['judul_kejadian'] = judul;
-      request.fields['tipe_laporan'] = tipe;
-      request.fields['deskripsi'] = deskripsi;
-      request.fields['prioritas'] = prioritas;
-      request.fields['latitude'] = lat.toString();
-      request.fields['longitude'] = lng.toString();
-      request.fields['status_penanganan'] = 'menunggu konfirmasi';
+      req.fields['judul_kejadian'] = judul;
+      req.fields['tipe_laporan'] = tipe;
+      req.fields['deskripsi'] = deskripsi;
+      req.fields['prioritas'] = prioritas;
+      req.fields['latitude'] = lat.toString();
+      req.fields['longitude'] = lng.toString();
+      req.fields['status_penanganan'] = 'menunggu konfirmasi';
 
       if (foto != null) {
-        request.files.add(
-          await http.MultipartFile.fromPath('foto_bukti', foto.path),
+        final isVid = _isVideo(foto.path);
+        debugPrint('Upload ${isVid ? "VIDEO" : "FOTO"}: ${foto.path}');
+        req.files.add(
+          http.MultipartFile(
+            'foto_bukti',
+            foto.openRead(),
+            await foto.length(),
+            filename: foto.path.split('/').last,
+            contentType: _mediaType(foto.path),
+          ),
         );
       }
 
-      var streamedResponse = await request.send().timeout(
-        const Duration(seconds: 20),
-      );
-      var response = await http.Response.fromStream(streamedResponse);
-      return response.statusCode == 201 || response.statusCode == 200;
+      // Timeout lebih lama untuk video
+      final streamed = await req.send().timeout(const Duration(minutes: 3));
+      final res = await http.Response.fromStream(streamed);
+      debugPrint('Upload response: ${res.statusCode} ${res.body}');
+      return res.statusCode == 200 || res.statusCode == 201;
     } catch (e) {
+      debugPrint('sendReport error: $e');
       return false;
     }
   }
 
-  // --- WRAPPER KIRIM ADUAN (YANG TADI HILANG) ---
   Future<bool> kirimAduan({
     required String judul,
     required String isiLaporan,
@@ -223,7 +242,7 @@ class ApiService {
     String tipeLaporan = 'aduan/kejadian',
     File? foto,
   }) async {
-    return await sendReport(
+    return sendReport(
       judul: judul,
       deskripsi: isiLaporan,
       tipe: tipeLaporan,
@@ -234,53 +253,57 @@ class ApiService {
     );
   }
 
-  // --- AMBIL RIWAYAT LAPORAN (YANG TADI HILANG) ---
+  // ── RIWAYAT ──
   Future<List<dynamic>> getHistoryLaporan() async {
     try {
       final token = await getToken();
-      final response = await http.get(
-        Uri.parse('$baseUrl/reports'),
-        headers: {
-          'Authorization': 'Bearer $token',
-          'Accept': 'application/json',
-        },
-      );
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        return data['data'] ?? [];
+      final res = await http
+          .get(
+            Uri.parse('$baseUrl/reports'),
+            headers: {
+              'Authorization': 'Bearer $token',
+              'Accept': 'application/json',
+            },
+          )
+          .timeout(const Duration(seconds: 15));
+      if (res.statusCode == 200) {
+        return jsonDecode(res.body)['data'] ?? [];
       }
       return [];
-    } catch (e) {
+    } catch (_) {
       return [];
     }
   }
 
-  // --- LAIN-LAIN ---
+  // ── LOGOUT ──
   Future<bool> logout() async {
     try {
       final token = await getToken();
-      await http.post(
-        Uri.parse('$baseUrl/logout'),
-        headers: {'Authorization': 'Bearer $token'},
-      );
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.clear();
-      return true;
-    } catch (e) {
-      return false;
-    }
+      await http
+          .post(
+            Uri.parse('$baseUrl/logout'),
+            headers: {'Authorization': 'Bearer $token'},
+          )
+          .timeout(const Duration(seconds: 10));
+    } catch (_) {}
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.clear();
+    return true;
   }
 
+  // ── JADWAL & INSTRUKSI ──
   Future<List<dynamic>> getJadwal() async {
     try {
       final token = await getToken();
-      final res = await http.get(
-        Uri.parse('$baseUrl/jadwal-mobile'),
-        headers: {'Authorization': 'Bearer $token'},
-      );
+      final res = await http
+          .get(
+            Uri.parse('$baseUrl/jadwal-mobile'),
+            headers: {'Authorization': 'Bearer $token'},
+          )
+          .timeout(const Duration(seconds: 15));
       if (res.statusCode == 200) return jsonDecode(res.body)['data'] ?? [];
       return [];
-    } catch (e) {
+    } catch (_) {
       return [];
     }
   }
@@ -288,12 +311,14 @@ class ApiService {
   Future<Map<String, dynamic>?> getLatestInstruction() async {
     try {
       final token = await getToken();
-      final res = await http.get(
-        Uri.parse('$baseUrl/latest-instruction'),
-        headers: {'Authorization': 'Bearer $token'},
-      );
+      final res = await http
+          .get(
+            Uri.parse('$baseUrl/latest-instruction'),
+            headers: {'Authorization': 'Bearer $token'},
+          )
+          .timeout(const Duration(seconds: 10));
       return res.statusCode == 200 ? jsonDecode(res.body) : null;
-    } catch (e) {
+    } catch (_) {
       return null;
     }
   }
@@ -301,14 +326,15 @@ class ApiService {
   Future<Map<String, dynamic>> getRingkasan() async {
     try {
       final token = await getToken();
-      final res = await http.get(
-        Uri.parse('$baseUrl/ringkasan-laporan'),
-        headers: {'Authorization': 'Bearer $token'},
-      );
-      return res.statusCode == 200
-          ? jsonDecode(res.body)
-          : {'laporan_count': 0, 'checkpoint_count': 0};
-    } catch (e) {
+      final res = await http
+          .get(
+            Uri.parse('$baseUrl/ringkasan-laporan'),
+            headers: {'Authorization': 'Bearer $token'},
+          )
+          .timeout(const Duration(seconds: 15));
+      if (res.statusCode == 200) return jsonDecode(res.body);
+      return {'laporan_count': 0, 'checkpoint_count': 0};
+    } catch (_) {
       return {'laporan_count': 0, 'checkpoint_count': 0};
     }
   }

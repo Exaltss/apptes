@@ -5,27 +5,21 @@ import 'package:image_picker/image_picker.dart';
 import '../services/api_service.dart';
 
 class AduanScreen extends StatefulWidget {
-  final VoidCallback?
-  onSuccess; // Digunakan untuk kembali ke Beranda Tab tanpa error Navigator
+  final VoidCallback? onSuccess;
   const AduanScreen({super.key, this.onSuccess});
-
   @override
   State<AduanScreen> createState() => _AduanScreenState();
 }
 
 class _AduanScreenState extends State<AduanScreen> {
-  // Kontroler Input
-  final TextEditingController _judulCtrl = TextEditingController();
-  final TextEditingController _deskripsiCtrl = TextEditingController();
+  final _judulCtrl = TextEditingController();
+  final _deskripsiCtrl = TextEditingController();
   String _prioritas = "sedang";
-
-  // Data Lokasi & Foto
   Position? _currentPosition;
-  File? _imageFile;
-  final ImagePicker _picker = ImagePicker();
-
-  // State UI
+  File? _mediaFile;
+  bool _isVideo = false;
   bool _isSending = false;
+  final _picker = ImagePicker();
 
   @override
   void initState() {
@@ -40,46 +34,47 @@ class _AduanScreenState extends State<AduanScreen> {
     super.dispose();
   }
 
-  // --- FUNGSI AMBIL LOKASI ---
   Future<void> _getLocation() async {
     try {
-      Position position = await Geolocator.getCurrentPosition(
+      final pos = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.medium,
         ),
       ).timeout(const Duration(seconds: 5));
-
-      if (mounted) {
-        setState(() => _currentPosition = position);
-      }
-    } catch (e) {
-      debugPrint("GPS Error Awal: $e");
-    }
+      if (mounted) setState(() => _currentPosition = pos);
+    } catch (_) {}
   }
 
-  // --- FUNGSI PILIH FOTO ---
-  Future<void> _pickImage(ImageSource source) async {
+  Future<void> _pickMedia(ImageSource source, {bool isVideo = false}) async {
     try {
-      final XFile? pickedFile = await _picker.pickImage(
-        source: source,
-        imageQuality: 60, // Kompresi agar upload lebih cepat
-      );
-      if (pickedFile != null) {
-        setState(() => _imageFile = File(pickedFile.path));
+      if (isVideo) {
+        final f = await _picker.pickVideo(
+          source: source,
+          maxDuration: const Duration(minutes: 3),
+        );
+        if (f != null) {
+          setState(() {
+            _mediaFile = File(f.path);
+            _isVideo = true;
+          });
+        }
+      } else {
+        final f = await _picker.pickImage(source: source, imageQuality: 60);
+        if (f != null) {
+          setState(() {
+            _mediaFile = File(f.path);
+            _isVideo = false;
+          });
+        }
       }
     } catch (e) {
-      debugPrint("Gagal mengambil media: $e");
+      debugPrint("Media error: $e");
     }
   }
 
-  // --- PROSES KIRIM DATA KE BACKEND ---
   Future<void> _kirimLaporan() async {
     setState(() => _isSending = true);
-
     try {
-      final api = ApiService();
-
-      // Logika GPS Cadangan: Jika belum dapat lokasi, coba ambil sekali lagi
       if (_currentPosition == null) {
         try {
           _currentPosition = await Geolocator.getCurrentPosition(
@@ -87,25 +82,19 @@ class _AduanScreenState extends State<AduanScreen> {
               accuracy: LocationAccuracy.high,
             ),
           ).timeout(const Duration(seconds: 3));
-        } catch (e) {
-          debugPrint(
-            "Gagal lock lokasi instan, menggunakan koordinat default.",
-          );
-        }
+        } catch (_) {}
       }
-
       double lat = _currentPosition?.latitude ?? -8.0667;
       double lng = _currentPosition?.longitude ?? 111.9000;
 
-      // Panggil API multipart
-      bool success = await api.sendReport(
+      bool success = await ApiService().sendReport(
         judul: _judulCtrl.text,
         deskripsi: _deskripsiCtrl.text,
         tipe: 'aduan/kejadian',
         prioritas: _prioritas,
         lat: lat,
         lng: lng,
-        foto: _imageFile,
+        foto: _mediaFile,
       );
 
       if (!mounted) return;
@@ -115,31 +104,25 @@ class _AduanScreenState extends State<AduanScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             backgroundColor: Colors.green,
-            content: Text("Laporan Berhasil Terkirim ke Pusat!"),
+            content: Text("Laporan Berhasil Terkirim!"),
           ),
         );
-
-        // Reset Form
         _judulCtrl.clear();
         _deskripsiCtrl.clear();
-        setState(() => _imageFile = null);
-
-        // Berpindah tab ke Beranda melalui callback
-        if (widget.onSuccess != null) {
-          widget.onSuccess!();
-        }
+        setState(() {
+          _mediaFile = null;
+          _isVideo = false;
+        });
+        widget.onSuccess?.call();
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             backgroundColor: Colors.red,
-            content: Text(
-              "Gagal mengirim data. Cek koneksi internet atau ukuran foto.",
-            ),
+            content: Text("Gagal mengirim. Cek koneksi atau ukuran file."),
           ),
         );
       }
     } catch (e) {
-      debugPrint("Crash di UI Aduan: $e");
       if (mounted) setState(() => _isSending = false);
     }
   }
@@ -152,11 +135,10 @@ class _AduanScreenState extends State<AduanScreen> {
         children: [
           SafeArea(
             child: SingleChildScrollView(
-              padding: const EdgeInsets.all(20.0),
+              padding: const EdgeInsets.all(20),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // --- HEADER ---
                   Row(
                     children: [
                       InkWell(
@@ -168,11 +150,12 @@ class _AduanScreenState extends State<AduanScreen> {
                         ),
                       ),
                       const SizedBox(width: 15),
+                      // ✅ JUDUL DIGANTI "LAPORAN"
                       const Text(
-                        "Form Aduan Digital",
+                        "Laporan",
                         style: TextStyle(
                           color: Colors.white,
-                          fontSize: 20,
+                          fontSize: 22,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
@@ -180,19 +163,22 @@ class _AduanScreenState extends State<AduanScreen> {
                   ),
                   const SizedBox(height: 25),
 
-                  // --- WIDGET FOTO ---
-                  _buildLabel("Foto Bukti Kejadian"),
+                  _buildLabel("Foto / Video Bukti Kejadian"),
                   GestureDetector(
-                    onTap: () => _showMediaOptions(),
+                    onTap: _showMediaOptions,
                     child: Container(
                       width: double.infinity,
                       height: 200,
                       decoration: BoxDecoration(
                         color: const Color(0xFF2C3542),
                         borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.white10),
+                        border: Border.all(
+                          color: _mediaFile != null
+                              ? Colors.greenAccent
+                              : Colors.white10,
+                        ),
                       ),
-                      child: _imageFile == null
+                      child: _mediaFile == null
                           ? const Column(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
@@ -203,19 +189,47 @@ class _AduanScreenState extends State<AduanScreen> {
                                 ),
                                 SizedBox(height: 10),
                                 Text(
-                                  "Klik untuk Lampirkan Foto",
+                                  "Klik untuk Lampirkan Foto / Video",
                                   style: TextStyle(color: Colors.grey),
+                                ),
+                              ],
+                            )
+                          : _isVideo
+                          ? Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(
+                                  Icons.videocam,
+                                  color: Colors.greenAccent,
+                                  size: 55,
+                                ),
+                                const SizedBox(height: 8),
+                                Text(
+                                  _mediaFile!.path.split('/').last,
+                                  style: const TextStyle(
+                                    color: Colors.white70,
+                                    fontSize: 12,
+                                  ),
+                                  overflow: TextOverflow.ellipsis,
+                                  maxLines: 1,
+                                ),
+                                const SizedBox(height: 4),
+                                const Text(
+                                  "✓ Video terpilih",
+                                  style: TextStyle(
+                                    color: Colors.greenAccent,
+                                    fontSize: 12,
+                                  ),
                                 ),
                               ],
                             )
                           : ClipRRect(
                               borderRadius: BorderRadius.circular(12),
-                              child: Image.file(_imageFile!, fit: BoxFit.cover),
+                              child: Image.file(_mediaFile!, fit: BoxFit.cover),
                             ),
                     ),
                   ),
 
-                  // --- INPUT JUDUL ---
                   _buildLabel("Judul Kejadian"),
                   TextField(
                     controller: _judulCtrl,
@@ -225,7 +239,6 @@ class _AduanScreenState extends State<AduanScreen> {
                     ),
                   ),
 
-                  // --- DROPDOWN PRIORITAS ---
                   _buildLabel("Prioritas Keamanan"),
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -242,6 +255,10 @@ class _AduanScreenState extends State<AduanScreen> {
                           Icons.keyboard_arrow_down,
                           color: Colors.white,
                         ),
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                        ),
                         items: const [
                           DropdownMenuItem(
                             value: "sedang",
@@ -252,16 +269,11 @@ class _AduanScreenState extends State<AduanScreen> {
                             child: Text("Tinggi (Gawat)"),
                           ),
                         ],
-                        onChanged: (val) => setState(() => _prioritas = val!),
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                        ),
+                        onChanged: (v) => setState(() => _prioritas = v!),
                       ),
                     ),
                   ),
 
-                  // --- INPUT DESKRIPSI ---
                   _buildLabel("Kronologi Kejadian"),
                   TextField(
                     controller: _deskripsiCtrl,
@@ -273,8 +285,6 @@ class _AduanScreenState extends State<AduanScreen> {
                   ),
 
                   const SizedBox(height: 35),
-
-                  // --- TOMBOL SUBMIT ---
                   SizedBox(
                     width: double.infinity,
                     height: 55,
@@ -287,7 +297,7 @@ class _AduanScreenState extends State<AduanScreen> {
                         ),
                       ),
                       child: const Text(
-                        "KIRIM DATA LAPORAN",
+                        "KIRIM LAPORAN",
                         style: TextStyle(
                           color: Colors.black,
                           fontWeight: FontWeight.bold,
@@ -300,11 +310,9 @@ class _AduanScreenState extends State<AduanScreen> {
               ),
             ),
           ),
-
-          // --- LOADING OVERLAY ---
           if (_isSending)
             Container(
-              color: Colors.black.withValues(alpha: 0.7),
+              color: Colors.black.withValues(alpha: .7),
               child: const Center(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -312,7 +320,7 @@ class _AduanScreenState extends State<AduanScreen> {
                     CircularProgressIndicator(color: Colors.yellow),
                     SizedBox(height: 15),
                     Text(
-                      "Memproses Laporan...",
+                      "Mengirim Laporan...",
                       style: TextStyle(
                         color: Colors.white,
                         fontWeight: FontWeight.bold,
@@ -327,7 +335,6 @@ class _AduanScreenState extends State<AduanScreen> {
     );
   }
 
-  // --- UI HELPER: MEDIA SOURCE SHEET ---
   void _showMediaOptions() {
     showModalBottomSheet(
       context: context,
@@ -339,26 +346,58 @@ class _AduanScreenState extends State<AduanScreen> {
         mainAxisSize: MainAxisSize.min,
         children: [
           const SizedBox(height: 10),
+          const Padding(
+            padding: EdgeInsets.all(12),
+            child: Text(
+              "Pilih Media",
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
           ListTile(
             leading: const Icon(Icons.camera_alt, color: Colors.white),
             title: const Text(
-              "Gunakan Kamera",
+              "Kamera — Foto",
               style: TextStyle(color: Colors.white),
             ),
             onTap: () {
               Navigator.pop(ctx);
-              _pickImage(ImageSource.camera);
+              _pickMedia(ImageSource.camera);
             },
           ),
           ListTile(
             leading: const Icon(Icons.photo_library, color: Colors.white),
             title: const Text(
-              "Pilih dari Galeri",
+              "Galeri — Foto",
               style: TextStyle(color: Colors.white),
             ),
             onTap: () {
               Navigator.pop(ctx);
-              _pickImage(ImageSource.gallery);
+              _pickMedia(ImageSource.gallery);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.videocam, color: Colors.greenAccent),
+            title: const Text(
+              "Kamera — Video",
+              style: TextStyle(color: Colors.white),
+            ),
+            onTap: () {
+              Navigator.pop(ctx);
+              _pickMedia(ImageSource.camera, isVideo: true);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.video_library, color: Colors.greenAccent),
+            title: const Text(
+              "Galeri — Video",
+              style: TextStyle(color: Colors.white),
+            ),
+            onTap: () {
+              Navigator.pop(ctx);
+              _pickMedia(ImageSource.gallery, isVideo: true);
             },
           ),
           const SizedBox(height: 20),
@@ -367,7 +406,6 @@ class _AduanScreenState extends State<AduanScreen> {
     );
   }
 
-  // --- UI HELPER: TEXT STYLES ---
   Widget _buildLabel(String t) => Padding(
     padding: const EdgeInsets.only(top: 15, bottom: 8),
     child: Text(
@@ -391,7 +429,6 @@ class _AduanScreenState extends State<AduanScreen> {
     ),
   );
 
-  // --- UI HELPER: CONFIRMATION DIALOG ---
   void _showConfirm() {
     if (_judulCtrl.text.isEmpty || _deskripsiCtrl.text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -405,7 +442,7 @@ class _AduanScreenState extends State<AduanScreen> {
         backgroundColor: const Color(0xFF222B36),
         title: const Text("Konfirmasi", style: TextStyle(color: Colors.white)),
         content: const Text(
-          "Pastikan data sudah benar. Kirim laporan sekarang?",
+          "Kirim laporan sekarang?",
           style: TextStyle(color: Colors.white70),
         ),
         actions: [
