@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../services/api_service.dart';
 import 'login_screen.dart';
 
@@ -19,7 +18,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   String nama = '...';
   String pangkat = '...';
-  String noWa = '...';
+  String noWa = '...'; // hanya info, tidak ada link WA
   String? fotoUrl;
   String username = '...';
   String status = '...';
@@ -34,9 +33,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _loadLocalData();
     // Auto-sync setiap 30 detik
     _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
-      if (mounted) {
-        _syncProfileFromServer();
-      }
+      if (mounted) _syncProfileFromServer();
     });
   }
 
@@ -48,9 +45,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   Future<void> _loadLocalData() async {
     final prefs = await SharedPreferences.getInstance();
-    if (!mounted) {
-      return;
-    }
+    if (!mounted) return;
     setState(() {
       nama = prefs.getString('nama_lengkap') ?? 'Petugas';
       pangkat = prefs.getString('pangkat') ?? '-';
@@ -68,9 +63,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     try {
       final data = await _api.getProfile();
       final p = data['personnel'];
-      if (p == null || !mounted) {
-        return;
-      }
+      if (p == null || !mounted) return;
       final prefs = await SharedPreferences.getInstance();
       String? newFoto;
       if (p['foto_profil'] != null && p['foto_profil'].toString().isNotEmpty) {
@@ -87,49 +80,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
         pangkat = p['pangkat'] ?? pangkat;
         noWa = p['nrp'] ?? noWa;
         status = p['status_aktif'] ?? status;
-        if (newFoto != null) {
-          fotoUrl = newFoto;
-        }
+        if (newFoto != null) fotoUrl = newFoto;
       });
     } catch (e) {
       debugPrint('Sync profil error: $e');
     }
   }
 
-  Future<void> _openWA(String noHp) async {
-    if (noHp.isEmpty || noHp == '-') {
-      return;
-    }
-    // Pastikan format international (628xxx)
-    String formatted = noHp.replaceAll(RegExp(r'\s+|-'), '');
-    if (formatted.startsWith('0')) {
-      formatted = '62${formatted.substring(1)}';
-    }
-    final uri = Uri.parse('https://wa.me/$formatted');
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } else {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Tidak dapat membuka WhatsApp')),
-        );
-      }
-    }
-  }
-
   Future<void> _pickImage(ImageSource source) async {
     final img = await _picker.pickImage(source: source, imageQuality: 50);
-    if (img != null) {
-      await _uploadPhoto(File(img.path));
-    }
+    if (img != null) await _uploadPhoto(File(img.path));
   }
 
   Future<void> _uploadPhoto(File file) async {
     setState(() => _isUploading = true);
     final url = await _api.updateProfilePhoto(file);
-    if (!mounted) {
-      return;
-    }
+    if (!mounted) return;
     setState(() {
       _isUploading = false;
       if (url != null) fotoUrl = url;
@@ -261,7 +227,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 padding: const EdgeInsets.all(25),
                 child: Column(
                   children: [
-                    // ── FOTO PROFIL ──
+                    // ── Foto profil ──
                     Center(
                       child: Stack(
                         children: [
@@ -332,9 +298,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                     const SizedBox(height: 28),
 
-                    // ── INFO TILES ──
-                    // No. WhatsApp — bisa di-tap untuk buka chat
-                    _buildWaTile(noWa),
+                    // ── Nomor WA — hanya info, TIDAK ada tap ke WhatsApp ──
+                    _buildInfoTile(
+                      Icons.phone,
+                      'NOMOR WHATSAPP',
+                      noWa,
+                      color: Colors.greenAccent,
+                    ),
                     _buildInfoTile(
                       Icons.account_circle,
                       'USERNAME AKUN',
@@ -348,7 +318,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
                     const SizedBox(height: 40),
 
-                    // ── TOMBOL LOGOUT ──
+                    // ── Tombol Logout ──
                     SizedBox(
                       width: double.infinity,
                       height: 55,
@@ -378,78 +348,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
     );
   }
 
-  // Tile No. WA khusus dengan tap-to-open-WA
-  Widget _buildWaTile(String noHp) {
-    return GestureDetector(
-      onTap: () => _openWA(noHp),
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 15),
-        padding: const EdgeInsets.all(15),
-        decoration: BoxDecoration(
-          color: const Color(0xFF222B36),
-          borderRadius: BorderRadius.circular(15),
-          border: Border.all(
-            color: Colors.green.withValues(alpha: .3),
-            width: 1,
-          ),
-        ),
-        child: Row(
-          children: [
-            // Menggunakan icon chat sebagai pengganti logo WA bawaan
-            const Icon(
-              Icons.chat_bubble_outline,
-              color: Colors.greenAccent,
-              size: 24,
-            ),
-            const SizedBox(width: 15),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'NO. WHATSAPP',
-                    style: TextStyle(color: Colors.grey, fontSize: 10),
-                  ),
-                  Text(
-                    noHp,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: Colors.green.withValues(alpha: .15),
-                borderRadius: BorderRadius.circular(20),
-              ),
-              child: const Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.chat, color: Colors.greenAccent, size: 14),
-                  SizedBox(width: 4),
-                  Text(
-                    'Chat',
-                    style: TextStyle(
-                      color: Colors.greenAccent,
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildInfoTile(IconData icon, String label, String value) {
+  Widget _buildInfoTile(
+    IconData icon,
+    String label,
+    String value, {
+    Color? color,
+  }) {
     return Container(
       margin: const EdgeInsets.only(bottom: 15),
       padding: const EdgeInsets.all(15),
@@ -459,7 +363,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       ),
       child: Row(
         children: [
-          Icon(icon, color: Colors.blueAccent, size: 24),
+          Icon(icon, color: color ?? Colors.blueAccent, size: 24),
           const SizedBox(width: 15),
           Column(
             crossAxisAlignment: CrossAxisAlignment.start,

@@ -14,7 +14,6 @@ class ApiService {
     return prefs.getString('token');
   }
 
-  // ── Helper: deteksi apakah file adalah video ──
   static bool _isVideo(String path) {
     final ext = path.split('.').last.toLowerCase();
     return ['mp4', 'mov', 'avi', '3gp', 'mkv', 'webm'].contains(ext);
@@ -105,8 +104,7 @@ class ApiService {
       final streamed = await req.send().timeout(const Duration(seconds: 60));
       final res = await http.Response.fromStream(streamed);
       if (res.statusCode == 200) {
-        final data = jsonDecode(res.body);
-        final url = data['url'].toString();
+        final url = jsonDecode(res.body)['url'].toString();
         final prefs = await SharedPreferences.getInstance();
         await prefs.setString('foto_profil', url);
         return url;
@@ -134,11 +132,13 @@ class ApiService {
     throw Exception('Gagal memuat profil');
   }
 
-  // ── UPDATE LOKASI ──
+  // ── UPDATE LOKASI (TIME-BASED + speed & heading) ──
   Future<bool> updatePatrolStatus({
     required double lat,
     required double long,
     required String status,
+    double speed = 0.0, // m/s dari GPS
+    double heading = 0.0, // derajat 0-360
   }) async {
     try {
       final token = await getToken();
@@ -154,9 +154,11 @@ class ApiService {
               'latitude': lat,
               'longitude': long,
               'status_aktif': status,
+              'speed': speed,
+              'heading': heading,
             }),
           )
-          .timeout(const Duration(seconds: 8));
+          .timeout(const Duration(seconds: 5));
       return res.statusCode == 200 || res.statusCode == 201;
     } catch (_) {
       return false;
@@ -200,7 +202,6 @@ class ApiService {
         'Authorization': 'Bearer $token',
         'Accept': 'application/json',
       });
-
       req.fields['judul_kejadian'] = judul;
       req.fields['tipe_laporan'] = tipe;
       req.fields['deskripsi'] = deskripsi;
@@ -223,7 +224,6 @@ class ApiService {
         );
       }
 
-      // Timeout lebih lama untuk video
       final streamed = await req.send().timeout(const Duration(minutes: 3));
       final res = await http.Response.fromStream(streamed);
       debugPrint('Upload response: ${res.statusCode} ${res.body}');
@@ -266,9 +266,7 @@ class ApiService {
             },
           )
           .timeout(const Duration(seconds: 15));
-      if (res.statusCode == 200) {
-        return jsonDecode(res.body)['data'] ?? [];
-      }
+      if (res.statusCode == 200) return jsonDecode(res.body)['data'] ?? [];
       return [];
     } catch (_) {
       return [];

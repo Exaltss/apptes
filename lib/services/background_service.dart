@@ -5,7 +5,6 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:geolocator/geolocator.dart';
 import 'api_service.dart';
 
-// ── Notification channel (wajib dibuat sebelum service start) ──
 const AndroidNotificationChannel _channel = AndroidNotificationChannel(
   'patrol_gps_channel',
   'GPS Patroli Aktif',
@@ -16,7 +15,6 @@ const AndroidNotificationChannel _channel = AndroidNotificationChannel(
 );
 
 Future<void> initBackgroundService() async {
-  // 1. Buat notification channel DULU
   final flnp = FlutterLocalNotificationsPlugin();
   await flnp
       .resolvePlatformSpecificImplementation<
@@ -24,7 +22,6 @@ Future<void> initBackgroundService() async {
       >()
       ?.createNotificationChannel(_channel);
 
-  // 2. Baru configure background service
   final service = FlutterBackgroundService();
   await service.configure(
     androidConfiguration: AndroidConfiguration(
@@ -33,7 +30,7 @@ Future<void> initBackgroundService() async {
       isForegroundMode: true,
       notificationChannelId: 'patrol_gps_channel',
       initialNotificationTitle: 'GPS Patroli Aktif',
-      initialNotificationContent: 'Lokasi Anda sedang dipantau...',
+      initialNotificationContent: 'Memantau lokasi...',
       foregroundServiceNotificationId: 888,
     ),
     iosConfiguration: IosConfiguration(
@@ -62,7 +59,6 @@ void onBackgroundStart(ServiceInstance service) async {
       service.setAsBackgroundService();
     });
   }
-
   service.on('stopService').listen((_) {
     service.stopSelf();
   });
@@ -74,29 +70,34 @@ void onBackgroundStart(ServiceInstance service) async {
     }
   });
 
-  // Kirim lokasi setiap 3 detik
-  Timer.periodic(const Duration(seconds: 3), (_) async {
+  // ✅ TIME-BASED: kirim setiap 2 detik tanpa syarat jarak
+  Timer.periodic(const Duration(seconds: 2), (_) async {
     if (service is AndroidServiceInstance) {
       if (!await service.isForegroundService()) return;
     }
     try {
       final pos = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
+          accuracy: LocationAccuracy.bestForNavigation,
         ),
-      ).timeout(const Duration(seconds: 5));
+      ).timeout(const Duration(seconds: 3));
 
+      // Kirim posisi + speed + heading untuk smooth interpolasi
       await ApiService().updatePatrolStatus(
         lat: pos.latitude,
         long: pos.longitude,
         status: currentStatus,
+        speed: pos.speed < 0 ? 0 : pos.speed, // m/s
+        heading: pos.heading < 0 ? 0 : pos.heading, // derajat
       );
 
       if (service is AndroidServiceInstance) {
+        final speedKmh = (pos.speed * 3.6).toStringAsFixed(1);
         service.setForegroundNotificationInfo(
           title: 'GPS Patroli — ${currentStatus.toUpperCase()}',
           content:
-              'Update: ${DateTime.now().toLocal().toString().substring(11, 19)} WIB',
+              '${DateTime.now().toLocal().toString().substring(11, 19)} WIB'
+              ' | $speedKmh km/h',
         );
       }
     } catch (_) {}
@@ -108,7 +109,6 @@ Future<void> startBackgroundService(String status) async {
   final isRunning = await service.isRunning();
   if (!isRunning) {
     await service.startService();
-    // Tunggu sebentar agar service siap
     await Future.delayed(const Duration(milliseconds: 500));
   }
   service.invoke('updateStatus', {'status': status});

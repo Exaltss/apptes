@@ -3,12 +3,12 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:geolocator/geolocator.dart';
 import '../services/api_service.dart';
+import '../services/background_service.dart';
 import 'aduan_screen.dart';
 import 'checkpoint_screen.dart';
 import 'history_screen.dart';
 import 'map_screen.dart';
 import 'profile_screen.dart';
-import '../services/background_service.dart';
 
 enum PatrolStatus { idle, patrolling, standby, emergency }
 
@@ -43,7 +43,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final List<Widget> pages = [
+    final pages = [
       BerandaTab(onNavigateToMap: navigateToMap),
       AduanScreen(onSuccess: () => _changeTab(0)),
       const HistoryScreen(),
@@ -77,6 +77,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
+// ════════════════════════════════════════════════════════════════
 class BerandaTab extends StatefulWidget {
   final Function(double, double) onNavigateToMap;
   const BerandaTab({super.key, required this.onNavigateToMap});
@@ -86,12 +87,13 @@ class BerandaTab extends StatefulWidget {
 
 class _BerandaTabState extends State<BerandaTab> {
   PatrolStatus _status = PatrolStatus.idle;
-  String _fullname = "Memuat...";
-  String _pangkat = "";
+  String _fullname = 'Memuat...';
+  String _pangkat = '';
   String? _fotoUrl;
   bool _isLoading = false;
   List<dynamic> _jadwalList = [];
   int _checkpointCount = 0;
+  bool _isUpdating = false;
 
   final List<Map<String, dynamic>> _notifications = [];
   int _lastNotifId = 0;
@@ -104,7 +106,7 @@ class _BerandaTabState extends State<BerandaTab> {
     super.initState();
     _loadUserData();
     _setInitialOffline();
-    _pollingTimer = Timer.periodic(const Duration(seconds: 10), (t) {
+    _pollingTimer = Timer.periodic(const Duration(seconds: 10), (_) {
       if (mounted) {
         _fetchSyncData();
         _checkInstructions();
@@ -124,15 +126,14 @@ class _BerandaTabState extends State<BerandaTab> {
   }
 
   Future<void> _loadUserData() async {
-    SharedPreferences prefs = await SharedPreferences.getInstance();
+    final prefs = await SharedPreferences.getInstance();
     if (mounted) {
       setState(() {
-        _fullname = prefs.getString('nama_lengkap') ?? "Petugas";
-        _pangkat = prefs.getString('pangkat') ?? "Anggota";
-
-        final savedUrl = prefs.getString('foto_profil');
-        _fotoUrl = (savedUrl != null && !savedUrl.contains('10.0.2.2'))
-            ? savedUrl
+        _fullname = prefs.getString('nama_lengkap') ?? 'Petugas';
+        _pangkat = prefs.getString('pangkat') ?? 'Anggota';
+        final saved = prefs.getString('foto_profil');
+        _fotoUrl = (saved != null && !saved.contains('10.0.2.2'))
+            ? saved
             : null;
       });
     }
@@ -143,37 +144,31 @@ class _BerandaTabState extends State<BerandaTab> {
     try {
       final j = await ApiService().getJadwal();
       final r = await ApiService().getRingkasan();
-      SharedPreferences prefs = await SharedPreferences.getInstance();
-
-      final savedUrl = prefs.getString('foto_profil');
-      final latestFoto = (savedUrl != null && !savedUrl.contains('10.0.2.2'))
-          ? savedUrl
-          : null;
-
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getString('foto_profil');
       if (mounted) {
         setState(() {
           _jadwalList = j;
           _checkpointCount = r['checkpoint_count'] ?? 0;
-          _fotoUrl = latestFoto;
+          _fotoUrl = (saved != null && !saved.contains('10.0.2.2'))
+              ? saved
+              : null;
         });
       }
     } catch (e) {
-      debugPrint("Refresh Data Error: $e");
+      debugPrint('Refresh error: $e');
     }
   }
 
   Future<void> _checkInstructions() async {
     final latest = await ApiService().getLatestInstruction();
-    if (latest != null && (latest['id'] ?? 0) > _lastNotifId) {
-      setState(() {
-        _lastNotifId = latest['id'];
-        _notifications.insert(0, latest);
-      });
-
-      if (latest['tipe'] == 'darurat' ||
-          latest['tipe_instruksi'] == 'darurat') {
-        _showEmergencyPriorityDialog(latest);
-      }
+    if (latest == null || (latest['id'] ?? 0) <= _lastNotifId) return;
+    setState(() {
+      _lastNotifId = latest['id'];
+      _notifications.insert(0, latest);
+    });
+    if (latest['tipe'] == 'darurat' || latest['tipe_instruksi'] == 'darurat') {
+      _showEmergencyPriorityDialog(latest);
     }
   }
 
@@ -182,7 +177,7 @@ class _BerandaTabState extends State<BerandaTab> {
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
+      builder: (_) => AlertDialog(
         backgroundColor: const Color(0xFF8B0000),
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(20),
@@ -193,7 +188,7 @@ class _BerandaTabState extends State<BerandaTab> {
             Icon(Icons.warning_rounded, color: Colors.white, size: 30),
             SizedBox(width: 10),
             Text(
-              "PERINTAH DARURAT",
+              'PERINTAH DARURAT',
               style: TextStyle(
                 color: Colors.white,
                 fontWeight: FontWeight.bold,
@@ -206,7 +201,7 @@ class _BerandaTabState extends State<BerandaTab> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              data['judul'] ?? "Prioritas Tinggi",
+              data['judul'] ?? 'Prioritas Tinggi',
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: 18,
@@ -215,7 +210,7 @@ class _BerandaTabState extends State<BerandaTab> {
             ),
             const SizedBox(height: 10),
             Text(
-              data['isi'] ?? "-",
+              data['isi'] ?? '-',
               style: const TextStyle(color: Colors.white70),
             ),
           ],
@@ -227,7 +222,7 @@ class _BerandaTabState extends State<BerandaTab> {
               foregroundColor: Colors.red,
             ),
             onPressed: () {
-              Navigator.pop(ctx);
+              Navigator.pop(context);
               if (data['latitude'] != null) {
                 widget.onNavigateToMap(
                   double.parse(data['latitude'].toString()),
@@ -236,7 +231,7 @@ class _BerandaTabState extends State<BerandaTab> {
               }
             },
             child: const Text(
-              "LIHAT LOKASI",
+              'LIHAT LOKASI',
               style: TextStyle(fontWeight: FontWeight.bold),
             ),
           ),
@@ -252,12 +247,12 @@ class _BerandaTabState extends State<BerandaTab> {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (ctx) => Container(
+      builder: (_) => Padding(
         padding: const EdgeInsets.all(20),
         child: Column(
           children: [
             const Text(
-              "INSTRUKSI MASUK",
+              'INSTRUKSI MASUK',
               style: TextStyle(
                 color: Colors.white,
                 fontWeight: FontWeight.bold,
@@ -269,29 +264,30 @@ class _BerandaTabState extends State<BerandaTab> {
               child: _notifications.isEmpty
                   ? const Center(
                       child: Text(
-                        "Belum ada instruksi baru",
+                        'Belum ada instruksi',
                         style: TextStyle(color: Colors.grey),
                       ),
                     )
                   : ListView.builder(
                       itemCount: _notifications.length,
-                      itemBuilder: (c, i) {
+                      itemBuilder: (_, i) {
                         final item = _notifications[i];
-                        bool isUrgent = item['tipe'] == 'darurat';
                         return ListTile(
                           leading: Icon(
                             Icons.info_outline,
-                            color: isUrgent ? Colors.red : Colors.yellow,
+                            color: item['tipe'] == 'darurat'
+                                ? Colors.red
+                                : Colors.yellow,
                           ),
                           title: Text(
-                            item['judul'] ?? "-",
+                            item['judul'] ?? '-',
                             style: const TextStyle(
                               color: Colors.white,
                               fontWeight: FontWeight.bold,
                             ),
                           ),
                           subtitle: Text(
-                            item['isi'] ?? "-",
+                            item['isi'] ?? '-',
                             style: const TextStyle(
                               color: Colors.grey,
                               fontSize: 12,
@@ -299,12 +295,8 @@ class _BerandaTabState extends State<BerandaTab> {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
-                          trailing: const Icon(
-                            Icons.chevron_right,
-                            color: Colors.white24,
-                          ),
                           onTap: () {
-                            Navigator.pop(ctx);
+                            Navigator.pop(context);
                             if (item['latitude'] != null) {
                               widget.onNavigateToMap(
                                 double.parse(item['latitude'].toString()),
@@ -324,15 +316,15 @@ class _BerandaTabState extends State<BerandaTab> {
 
   Future<void> _handleMainTap() async {
     if (_status == PatrolStatus.idle) {
-      bool isLocationEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!isLocationEnabled) {
+      final enabled = await Geolocator.isLocationServiceEnabled();
+      if (!enabled) {
         if (mounted) _showGpsActivationDialog();
         return;
       }
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) return;
+      var perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) {
+        perm = await Geolocator.requestPermission();
+        if (perm == LocationPermission.denied) return;
       }
       _updateBackend('patroli', PatrolStatus.patrolling);
     } else if (_status == PatrolStatus.patrolling) {
@@ -345,28 +337,29 @@ class _BerandaTabState extends State<BerandaTab> {
   void _showGpsActivationDialog() {
     showDialog(
       context: context,
-      builder: (ctx) => AlertDialog(
+      builder: (_) => AlertDialog(
         backgroundColor: const Color(0xFF222B36),
         title: const Text(
-          "GPS Tidak Aktif",
+          'GPS Tidak Aktif',
           style: TextStyle(color: Colors.white),
         ),
         content: const Text(
-          "Layanan Lokasi (GPS) diperlukan untuk memulai patroli.",
+          'Layanan Lokasi (GPS) diperlukan untuk memulai patroli.',
+          style: TextStyle(color: Colors.white70),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("BATAL"),
+            onPressed: () => Navigator.pop(context),
+            child: const Text('BATAL'),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: Colors.yellow),
             onPressed: () {
-              Navigator.pop(ctx);
+              Navigator.pop(context);
               Geolocator.openLocationSettings();
             },
             child: const Text(
-              "AKTIFKAN",
+              'AKTIFKAN',
               style: TextStyle(
                 color: Colors.black,
                 fontWeight: FontWeight.bold,
@@ -379,17 +372,19 @@ class _BerandaTabState extends State<BerandaTab> {
   }
 
   Future<void> _updateBackend(String bStat, PatrolStatus uiStat) async {
+    // Cegah double-tap / double-request
+    if (_isUpdating) return;
+    _isUpdating = true;
     setState(() => _isLoading = true);
+
     try {
-      // Cek & minta izin GPS
-      bool enabled = await Geolocator.isLocationServiceEnabled();
+      final enabled = await Geolocator.isLocationServiceEnabled();
       if (!enabled) {
         if (mounted) _showGpsActivationDialog();
-        setState(() => _isLoading = false);
         return;
       }
 
-      LocationPermission perm = await Geolocator.checkPermission();
+      var perm = await Geolocator.checkPermission();
       if (perm == LocationPermission.denied) {
         perm = await Geolocator.requestPermission();
       }
@@ -403,30 +398,40 @@ class _BerandaTabState extends State<BerandaTab> {
           );
           await Geolocator.openAppSettings();
         }
-        setState(() => _isLoading = false);
         return;
       }
 
-      // Ambil posisi
+      // Ambil posisi — 3 kali percobaan agar tidak gagal di jaringan lambat
       Position? p;
-      try {
-        p = await Geolocator.getCurrentPosition(
-          locationSettings: const LocationSettings(
-            accuracy: LocationAccuracy.high,
-          ),
-        ).timeout(const Duration(seconds: 10));
-      } catch (_) {
-        p = await Geolocator.getLastKnownPosition();
+      for (int attempt = 0; attempt < 3 && p == null; attempt++) {
+        try {
+          p = await Geolocator.getCurrentPosition(
+            locationSettings: const LocationSettings(
+              accuracy: LocationAccuracy.high,
+            ),
+          ).timeout(const Duration(seconds: 8));
+        } catch (_) {
+          if (attempt == 2) p = await Geolocator.getLastKnownPosition();
+        }
       }
 
       final lat = p?.latitude ?? -8.0667;
       final lng = p?.longitude ?? 111.9000;
+      final spd = (p?.speed ?? 0) < 0 ? 0.0 : (p?.speed ?? 0);
+      final hdg = (p?.heading ?? 0) < 0 ? 0.0 : (p?.heading ?? 0);
 
-      final ok = await ApiService().updatePatrolStatus(
-        lat: lat,
-        long: lng,
-        status: bStat,
-      );
+      // Retry API hingga 3 kali
+      bool ok = false;
+      for (int i = 0; i < 3 && !ok; i++) {
+        ok = await ApiService().updatePatrolStatus(
+          lat: lat,
+          long: lng,
+          status: bStat,
+          speed: spd,
+          heading: hdg,
+        );
+        if (!ok) await Future.delayed(const Duration(milliseconds: 500));
+      }
 
       if (!mounted) return;
 
@@ -435,61 +440,117 @@ class _BerandaTabState extends State<BerandaTab> {
 
         if (uiStat != PatrolStatus.idle) {
           await startBackgroundService(bStat);
-          _positionStream?.cancel();
-          _positionStream =
-              Geolocator.getPositionStream(
-                locationSettings: const LocationSettings(
-                  accuracy: LocationAccuracy.high,
-                  distanceFilter: 3,
-                ),
-              ).listen((pos) {
+
+          // Batalkan stream lama sebelum buat yang baru
+          await _positionStream?.cancel();
+          _positionStream = null;
+
+          // Time-based stream setiap 2 detik
+          _positionStream = Stream.periodic(const Duration(seconds: 2))
+              .asyncMap((_) async {
+                try {
+                  return await Geolocator.getCurrentPosition(
+                    locationSettings: const LocationSettings(
+                      accuracy: LocationAccuracy.bestForNavigation,
+                    ),
+                  ).timeout(const Duration(seconds: 4));
+                } catch (_) {
+                  return await Geolocator.getLastKnownPosition();
+                }
+              })
+              .where((pos) => pos != null)
+              .cast<Position>()
+              .listen((pos) {
+                final s = pos.speed < 0 ? 0.0 : pos.speed;
+                final h = pos.heading < 0 ? 0.0 : pos.heading;
                 ApiService().updatePatrolStatus(
                   lat: pos.latitude,
                   long: pos.longitude,
                   status: _statusString(),
+                  speed: s,
+                  heading: h,
                 );
                 updateBackgroundStatus(_statusString());
               });
         } else {
-          _positionStream?.cancel();
+          await _positionStream?.cancel();
+          _positionStream = null;
           await stopBackgroundService();
+          // Kirim offline sekali lagi untuk memastikan backend tahu
+          ApiService().updatePatrolStatus(
+            lat: lat,
+            long: lng,
+            status: 'offline',
+          );
         }
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Gagal update status. Cek koneksi.'),
-            backgroundColor: Colors.orange,
-          ),
-        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Gagal update status. Cek koneksi internet.'),
+              backgroundColor: Colors.orange,
+            ),
+          );
+        }
       }
     } catch (e) {
-      debugPrint('Error _updateBackend: $e');
+      debugPrint('_updateBackend error: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
         );
       }
     } finally {
+      _isUpdating = false;
       if (mounted) setState(() => _isLoading = false);
     }
   }
 
   String _statusString() {
-    if (_status == PatrolStatus.patrolling) return 'patroli';
-    if (_status == PatrolStatus.standby) return 'bersiaga';
-    if (_status == PatrolStatus.emergency) return 'darurat';
-    return 'offline';
+    switch (_status) {
+      case PatrolStatus.patrolling:
+        return 'patroli';
+      case PatrolStatus.standby:
+        return 'bersiaga';
+      case PatrolStatus.emergency:
+        return 'darurat';
+      default:
+        return 'offline';
+    }
+  }
+
+  void _showStopDialog() {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Hentikan Patroli?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Batal'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () {
+              Navigator.pop(context);
+              _updateBackend('offline', PatrolStatus.idle);
+            },
+            child: const Text('YA', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    bool active = _status != PatrolStatus.idle;
+    final active = _status != PatrolStatus.idle;
     return SafeArea(
       child: RefreshIndicator(
         onRefresh: _fetchSyncData,
         child: SingleChildScrollView(
           physics: const AlwaysScrollableScrollPhysics(),
-          padding: const EdgeInsets.all(20.0),
+          padding: const EdgeInsets.all(20),
           child: Column(
             children: [
               _buildHeaderUI(),
@@ -516,7 +577,7 @@ class _BerandaTabState extends State<BerandaTab> {
                       child: _buildMenu(
                         active ? const Color(0xFF5DD35D) : Colors.grey,
                         Icons.visibility,
-                        "Checkpoint\n($_checkpointCount)",
+                        'Checkpoint\n($_checkpointCount)',
                       ),
                     ),
                   ),
@@ -530,7 +591,7 @@ class _BerandaTabState extends State<BerandaTab> {
                       child: _buildMenu(
                         active ? const Color(0xFFD48C56) : Colors.grey,
                         Icons.local_cafe,
-                        "Siaga",
+                        'Siaga',
                       ),
                     ),
                   ),
@@ -552,29 +613,6 @@ class _BerandaTabState extends State<BerandaTab> {
     );
   }
 
-  void _showStopDialog() {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text("Hentikan Patroli?"),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("Batal"),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () {
-              Navigator.pop(ctx);
-              _updateBackend('offline', PatrolStatus.idle);
-            },
-            child: const Text("YA", style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildHeaderUI() {
     return Row(
       children: [
@@ -583,7 +621,7 @@ class _BerandaTabState extends State<BerandaTab> {
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             border: Border.all(
-              color: Colors.yellow.withValues(alpha: 0.5),
+              color: Colors.yellow.withValues(alpha: .5),
               width: 2,
             ),
           ),
@@ -602,7 +640,7 @@ class _BerandaTabState extends State<BerandaTab> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              "WELCOME",
+              'WELCOME',
               style: TextStyle(
                 color: Colors.white,
                 fontSize: 18,
@@ -610,7 +648,7 @@ class _BerandaTabState extends State<BerandaTab> {
               ),
             ),
             Text(
-              "$_pangkat $_fullname",
+              '$_pangkat $_fullname',
               style: const TextStyle(color: Colors.grey),
             ),
           ],
@@ -666,7 +704,7 @@ class _BerandaTabState extends State<BerandaTab> {
           Icon(Icons.location_on, color: a ? Colors.blue : Colors.grey),
           const SizedBox(width: 10),
           Text(
-            a ? "Terdeteksi di Peta (Online)" : "Tidak Terdeteksi (Offline)",
+            a ? 'Terdeteksi di Peta (Online)' : 'Tidak Terdeteksi (Offline)',
             style: const TextStyle(
               color: Colors.white,
               fontWeight: FontWeight.bold,
@@ -693,16 +731,16 @@ class _BerandaTabState extends State<BerandaTab> {
 
   Widget _buildMainBtn() {
     Color c = const Color(0xFFFFC107);
-    String t = "Mulai";
+    String t = 'Mulai';
     if (_status == PatrolStatus.patrolling) {
       c = const Color(0xFF5DD35D);
-      t = "Selesai";
+      t = 'Selesai';
     } else if (_status == PatrolStatus.standby) {
       c = const Color(0xFFD48C56);
-      t = "Lanjut";
+      t = 'Lanjut';
     } else if (_status == PatrolStatus.emergency) {
       c = Colors.red;
-      t = "Matikan";
+      t = 'Matikan';
     }
     return Container(
       width: double.infinity,
@@ -762,7 +800,7 @@ class _BerandaTabState extends State<BerandaTab> {
       ),
       child: const Center(
         child: Text(
-          "SINYAL DARURAT",
+          'SINYAL DARURAT',
           style: TextStyle(
             color: Colors.white,
             fontWeight: FontWeight.bold,
@@ -782,7 +820,7 @@ class _BerandaTabState extends State<BerandaTab> {
       child: ExpansionTile(
         initiallyExpanded: true,
         title: const Text(
-          "Jadwal Patroli Saya",
+          'Jadwal Patroli Saya',
           style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
         ),
         iconColor: Colors.white,
@@ -791,7 +829,7 @@ class _BerandaTabState extends State<BerandaTab> {
             ? [
                 const ListTile(
                   title: Text(
-                    "Tidak ada jadwal",
+                    'Tidak ada jadwal',
                     style: TextStyle(color: Colors.grey),
                   ),
                 ),
@@ -799,8 +837,8 @@ class _BerandaTabState extends State<BerandaTab> {
             : _jadwalList.map((j) {
                 return ListTile(
                   onTap: () {
-                    double? lat = double.tryParse(j['latitude'].toString());
-                    double? lng = double.tryParse(j['longitude'].toString());
+                    final lat = double.tryParse(j['latitude'].toString());
+                    final lng = double.tryParse(j['longitude'].toString());
                     if (lat != null && lng != null && lat != 0.0) {
                       widget.onNavigateToMap(lat, lng);
                     }
@@ -814,7 +852,7 @@ class _BerandaTabState extends State<BerandaTab> {
                     ),
                   ),
                   subtitle: Text(
-                    "${j['tanggal']} | ${j['shift']}",
+                    '${j['tanggal']} | ${j['shift']}',
                     style: const TextStyle(color: Colors.grey, fontSize: 12),
                   ),
                   trailing: const Icon(
@@ -829,6 +867,7 @@ class _BerandaTabState extends State<BerandaTab> {
   }
 }
 
+// ── Bouncing Button ──────────────────────────────────────────────
 class _BouncingButton extends StatefulWidget {
   final Widget child;
   final VoidCallback onTap;
@@ -839,11 +878,12 @@ class _BouncingButton extends StatefulWidget {
 
 class _BouncingButtonState extends State<_BouncingButton>
     with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
+  late AnimationController _ctrl;
+
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(
+    _ctrl = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 100),
     );
@@ -851,21 +891,21 @@ class _BouncingButtonState extends State<_BouncingButton>
 
   @override
   void dispose() {
-    _controller.dispose();
+    _ctrl.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTapDown: (_) => _controller.forward(),
+      onTapDown: (_) => _ctrl.forward(),
       onTapUp: (_) {
-        _controller.reverse();
+        _ctrl.reverse();
         widget.onTap();
       },
-      onTapCancel: () => _controller.reverse(),
+      onTapCancel: () => _ctrl.reverse(),
       child: ScaleTransition(
-        scale: Tween<double>(begin: 1.0, end: 0.95).animate(_controller),
+        scale: Tween<double>(begin: 1.0, end: 0.95).animate(_ctrl),
         child: widget.child,
       ),
     );
